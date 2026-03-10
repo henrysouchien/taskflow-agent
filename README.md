@@ -108,4 +108,4 @@ Database is created automatically on first run via `db.init_db()`.
 
 ## License
 
-MIT
+PolyForm Noncommercial 1.0.0 — free for personal and noncommercial use.
