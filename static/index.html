@@ -1,0 +1,2268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Taskflow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-root: #0c0c0e;
+  --bg-surface: #131316;
+  --bg-surface-2: #1a1a1f;
+  --bg-surface-3: #222228;
+  --bg-hover: #1e1e24;
+  --bg-active: #25252d;
+  --border: #2a2a32;
+  --border-subtle: #1f1f27;
+  --text-primary: #e8e8ec;
+  --text-secondary: #8b8b96;
+  --text-tertiary: #5c5c66;
+  --text-muted: #44444d;
+  --accent: #5b9aff;
+  --accent-hover: #7db1ff;
+  --accent-dim: #2a3f5f;
+  --accent-glow: rgba(91, 154, 255, 0.08);
+  --green: #3dd68c;
+  --green-dim: #1a3d2d;
+  --red: #f05858;
+  --red-dim: #3d1a1a;
+  --orange: #f0a848;
+  --orange-dim: #3d2e1a;
+  --yellow: #e8d44d;
+  --yellow-dim: #3d3a1a;
+  --purple: #a78bfa;
+  --purple-dim: #2d2345;
+  --font-sans: 'DM Sans', -apple-system, sans-serif;
+  --font-mono: 'DM Mono', 'SF Mono', monospace;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --transition: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--bg-root);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+::selection { background: var(--accent-dim); color: var(--accent-hover); }
+
+input, textarea, button, select {
+  font-family: inherit; font-size: inherit; color: inherit;
+  border: none; outline: none; background: none;
+}
+button { cursor: pointer; }
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+
+/* ================================================================
+   LAYOUT
+   ================================================================ */
+#app {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  height: 100vh;
+}
+
+/* ================================================================
+   SIDEBAR
+   ================================================================ */
+.sidebar {
+  position: relative;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+}
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.active {
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+.sidebar-brand {
+  padding: 18px 16px 14px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.sidebar-brand .mark {
+  width: 20px; height: 20px;
+  background: var(--accent);
+  border-radius: 4px;
+  display: grid; place-items: center;
+  font-size: 10px; font-weight: 700;
+  color: var(--bg-root);
+  letter-spacing: -0.02em;
+}
+
+.sidebar-brand span {
+  font-size: 14px; font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+/* search */
+.sb-search { padding: 0 10px 6px; }
+.sb-search .wrap { position: relative; }
+.sb-search .wrap .hint {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--text-muted); pointer-events: none;
+  background: var(--bg-surface-3); padding: 1px 5px; border-radius: 3px;
+}
+.sb-search input {
+  width: 100%; padding: 6px 10px;
+  background: var(--bg-surface-2); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); color: var(--text-primary); font-size: 13px;
+  transition: border-color var(--transition);
+}
+.sb-search input:focus { border-color: var(--accent-dim); }
+.sb-search input:focus + .hint { display: none; }
+
+/* nav */
+.sb-nav { padding: 6px 10px 2px; display: flex; flex-direction: column; gap: 1px; }
+
+.sb-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: var(--radius);
+  font-size: 13px; color: var(--text-secondary); cursor: pointer;
+  transition: all var(--transition);
+}
+.sb-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.sb-item.active { background: var(--bg-active); color: var(--text-primary); }
+.sb-item .ic { width: 18px; text-align: center; font-size: 13px; flex-shrink: 0; opacity: 0.7; }
+.sb-item .badge {
+  margin-left: auto; font-family: var(--font-mono); font-size: 10px;
+  padding: 1px 6px; border-radius: 8px; min-width: 20px; text-align: center;
+}
+.sb-item .badge.b-red { color: var(--red); background: var(--red-dim); }
+.sb-item .badge.b-orange { color: var(--orange); background: var(--orange-dim); }
+.sb-item .badge.b-blue { color: var(--accent); background: var(--accent-dim); }
+
+/* project groups */
+.sb-group-label {
+  padding: 14px 18px 4px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+
+.sb-projects {
+  flex: 1; overflow-y: auto; padding: 0 10px 12px;
+  display: flex; flex-direction: column; gap: 0;
+}
+.sb-projects.collapsed { display: none; }
+
+.sb-proj {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 8px; border-radius: var(--radius);
+  cursor: pointer; transition: all var(--transition);
+}
+.sb-proj:hover { background: var(--bg-hover); }
+.sb-proj.active { background: var(--bg-active); }
+.sb-proj .p-icon { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; }
+.sb-proj .p-name {
+  font-size: 13px; color: var(--text-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
+}
+.sb-proj.active .p-name, .sb-proj:hover .p-name { color: var(--text-primary); }
+.sb-proj .p-count {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0;
+}
+
+/* phase dot on project items */
+.sb-proj .phase-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+}
+.phase-dot.ph-in_progress { background: var(--green); }
+.phase-dot.ph-planning { background: var(--orange); }
+.phase-dot.ph-idea { background: var(--purple); }
+.phase-dot.ph-reference { background: var(--text-muted); }
+.phase-dot.ph-done { background: var(--text-tertiary); }
+
+/* new project btn */
+.sb-new-proj {
+  margin: 4px 10px 10px; padding: 5px;
+  font-size: 12px; font-weight: 500; color: var(--text-tertiary);
+  border: 1px dashed var(--border); border-radius: var(--radius);
+  text-align: center; transition: all var(--transition);
+}
+.sb-new-proj:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+/* ================================================================
+   MAIN
+   ================================================================ */
+.main {
+  display: flex; flex-direction: column; overflow: hidden; background: var(--bg-root);
+}
+
+.main-header {
+  padding: 20px 28px 0; display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+}
+.main-header .h-icon { font-size: 20px; }
+.main-header h2 {
+  font-size: 19px; font-weight: 600; letter-spacing: -0.03em;
+}
+.main-header .h-meta {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); margin-left: 4px;
+}
+
+/* phase selector in header */
+.phase-select {
+  margin-left: 8px; padding: 3px 8px;
+  font-size: 11px; font-weight: 500; border-radius: 10px;
+  cursor: pointer; transition: all var(--transition); border: none;
+  -webkit-appearance: none; appearance: none;
+}
+.phase-select option { background: var(--bg-surface-2); color: var(--text-primary); }
+.ph-s-in_progress { background: var(--green-dim); color: var(--green); }
+.ph-s-planning { background: var(--orange-dim); color: var(--orange); }
+.ph-s-idea { background: var(--purple-dim); color: var(--purple); }
+.ph-s-done { background: var(--bg-surface-3); color: var(--text-tertiary); }
+.ph-s-reference { background: var(--bg-surface-3); color: var(--text-muted); }
+
+/* toolbar */
+.toolbar {
+  padding: 10px 28px 0; display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.tb-btn {
+  padding: 4px 10px; font-size: 12px; font-weight: 500;
+  color: var(--text-secondary); background: var(--bg-surface);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius);
+  transition: all var(--transition);
+}
+.tb-btn:hover { border-color: var(--border); color: var(--text-primary); }
+.tb-btn.active { background: var(--accent-dim); border-color: transparent; color: var(--accent); }
+.tb-spacer { flex: 1; }
+.tb-add {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 12px; font-size: 12px; font-weight: 500;
+  color: var(--bg-root); background: var(--accent); border-radius: var(--radius);
+  transition: background var(--transition);
+}
+.tb-add:hover { background: var(--accent-hover); }
+
+/* content area */
+.content { flex: 1; overflow-y: auto; padding: 16px 28px 60px; }
+
+/* ================================================================
+   DASHBOARD — "What's Next"
+   ================================================================ */
+.dash-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px; margin-top: 4px;
+}
+
+.dash-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  cursor: pointer;
+  transition: all var(--transition);
+  position: relative;
+  overflow: hidden;
+}
+.dash-card::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: var(--green); opacity: 0.5;
+}
+.dash-card:hover { border-color: var(--border); transform: translateY(-1px); }
+
+.dash-card .dc-top {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+}
+.dash-card .dc-icon { font-size: 18px; }
+.dash-card .dc-name {
+  font-size: 14px; font-weight: 600; letter-spacing: -0.02em; flex: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dash-card .dc-phase {
+  font-size: 10px; font-weight: 500; padding: 2px 7px;
+  border-radius: 8px; background: var(--green-dim); color: var(--green);
+}
+
+.dash-card .dc-tasks { display: flex; flex-direction: column; gap: 2px; }
+
+.dc-task {
+  display: flex; align-items: center; gap: 8px; padding: 4px 0;
+  font-size: 13px; color: var(--text-secondary);
+}
+.dc-task .dc-dot {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  flex-shrink: 0; opacity: 0.6;
+}
+.dc-task .dc-t-name {
+  flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dc-task .dc-due {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0;
+}
+.dc-task .dc-due.overdue { color: var(--red); }
+
+.dash-empty {
+  color: var(--text-muted); font-size: 12px; font-style: italic; padding: 4px 0;
+}
+
+/* backlog strip */
+.dash-backlog {
+  margin-top: 16px; padding: 12px 16px;
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg); display: flex; align-items: center; gap: 10px;
+  cursor: pointer; transition: all var(--transition);
+}
+.dash-backlog:hover { border-color: var(--border); }
+.dash-backlog .dbl-label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+.dash-backlog .dbl-count {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--accent); background: var(--accent-dim);
+  padding: 1px 7px; border-radius: 8px;
+}
+
+/* ================================================================
+   PROJECT VIEW
+   ================================================================ */
+/* Plan area */
+.plan-area {
+  margin-bottom: 20px; padding: 14px 16px;
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg); position: relative;
+}
+.plan-area .plan-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 6px;
+}
+.plan-area .plan-content {
+  font-size: 13px; line-height: 1.6; color: var(--text-secondary);
+  min-height: 20px;
+}
+.plan-area .plan-content:empty::before {
+  content: 'Add a plan...'; color: var(--text-muted); font-style: italic;
+}
+.plan-area .plan-edit {
+  position: absolute; top: 10px; right: 12px; font-size: 11px;
+  color: var(--text-muted); padding: 2px 8px; border-radius: var(--radius);
+  transition: all var(--transition); opacity: 0;
+}
+.plan-area:hover .plan-edit { opacity: 1; }
+.plan-area .plan-edit:hover { background: var(--bg-surface-2); color: var(--text-secondary); }
+
+.plan-textarea {
+  width: 100%; min-height: 100px; padding: 10px; resize: vertical;
+  background: var(--bg-surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-primary);
+  font-size: 13px; line-height: 1.6; font-family: var(--font-mono);
+}
+.plan-textarea:focus { border-color: var(--accent-dim); }
+.plan-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
+
+/* spec/section groups */
+.spec-group { margin-bottom: 6px; }
+
+.spec-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; border-radius: var(--radius);
+  cursor: pointer; transition: background var(--transition);
+}
+.spec-header:hover { background: var(--bg-surface); }
+
+.spec-chevron {
+  font-size: 9px; color: var(--text-muted);
+  transition: transform var(--transition); width: 14px; text-align: center;
+}
+.spec-group.collapsed .spec-chevron { transform: rotate(-90deg); }
+
+.spec-name {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.01em;
+  text-transform: uppercase; color: var(--text-tertiary);
+}
+.spec-count {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
+}
+.spec-plan-toggle {
+  margin-left: auto; font-size: 10px; color: var(--text-muted);
+  padding: 1px 6px; border-radius: var(--radius);
+  opacity: 0; transition: opacity var(--transition);
+}
+.spec-header:hover .spec-plan-toggle { opacity: 1; }
+.spec-plan-toggle:hover { background: var(--bg-surface-2); color: var(--text-secondary); }
+
+.spec-body { padding-left: 4px; }
+.spec-group.collapsed .spec-body { display: none; }
+
+/* spec plan (inline) */
+.spec-plan {
+  margin: 4px 0 6px 22px; padding: 8px 12px;
+  background: var(--bg-surface); border-left: 2px solid var(--border);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 12px; line-height: 1.5; color: var(--text-tertiary);
+}
+
+/* inline add */
+.inline-add {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; margin: 2px 0 6px;
+}
+.inline-add input {
+  flex: 1; padding: 4px 0; font-size: 13px;
+  color: var(--text-primary); border-bottom: 1px solid transparent;
+  transition: border-color var(--transition);
+}
+.inline-add input::placeholder { color: var(--text-muted); }
+.inline-add input:focus { border-bottom-color: var(--accent-dim); }
+.inline-add .ia-icon { color: var(--text-muted); font-size: 14px; }
+
+/* task rows */
+.task-row {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 6px 8px; border-radius: var(--radius);
+  cursor: pointer; transition: background var(--transition);
+}
+.task-row:hover { background: var(--bg-surface); }
+.task-row.selected { background: var(--bg-surface-2); }
+
+.t-check {
+  width: 16px; height: 16px; border: 1.5px solid var(--border);
+  border-radius: 50%; flex-shrink: 0; margin-top: 2px;
+  display: grid; place-items: center;
+  transition: all var(--transition); cursor: pointer;
+}
+.t-check:hover { border-color: var(--green); background: var(--green-dim); }
+.t-check.done { border-color: var(--green); background: var(--green); }
+.t-check.done::after { content: "\2713"; font-size: 9px; color: var(--bg-root); font-weight: 700; }
+
+.t-info { flex: 1; min-width: 0; }
+.t-name { font-size: 13px; color: var(--text-primary); word-break: break-word; }
+.task-row.completed .t-name {
+  color: var(--text-muted); text-decoration: line-through;
+  text-decoration-color: var(--text-muted);
+}
+.t-meta { display: flex; align-items: center; gap: 6px; margin-top: 1px; }
+.t-meta span {
+  font-size: 10px; font-family: var(--font-mono); color: var(--text-muted);
+}
+.t-meta .due.overdue { color: var(--red); }
+.t-meta .due.soon { color: var(--orange); }
+.t-meta .proj-ref { color: var(--accent); opacity: 0.6; font-family: var(--font-sans); font-size: 11px; }
+.t-meta .tag {
+  font-size: 9px; font-weight: 500; padding: 0 5px;
+  background: var(--bg-surface-3); border-radius: 3px;
+  color: var(--text-secondary); font-family: var(--font-sans);
+}
+
+/* completed section */
+.completed-toggle {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; margin-top: 8px;
+  font-size: 12px; color: var(--text-muted); cursor: pointer;
+  transition: color var(--transition);
+}
+.completed-toggle:hover { color: var(--text-secondary); }
+.completed-toggle .ct-chev {
+  font-size: 9px; transition: transform var(--transition);
+}
+.completed-toggle.open .ct-chev { transform: rotate(90deg); }
+.completed-tasks { display: none; }
+.completed-tasks.show { display: block; }
+
+/* ================================================================
+   DETAIL PANEL
+   ================================================================ */
+.detail {
+  background: var(--bg-surface); border-left: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: slideIn 180ms ease-out;
+}
+@keyframes slideIn {
+  from { transform: translateX(16px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.det-head {
+  padding: 14px 16px; display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid var(--border-subtle); flex-shrink: 0;
+}
+.det-close {
+  width: 26px; height: 26px; display: grid; place-items: center;
+  border-radius: var(--radius); color: var(--text-tertiary); font-size: 15px;
+  transition: all var(--transition);
+}
+.det-close:hover { background: var(--bg-surface-2); color: var(--text-primary); }
+.det-actions { margin-left: auto; display: flex; gap: 4px; }
+.det-act {
+  padding: 4px 8px; font-size: 11px; font-weight: 500;
+  border-radius: var(--radius); color: var(--text-secondary);
+  transition: all var(--transition);
+}
+.det-act:hover { background: var(--bg-surface-2); color: var(--text-primary); }
+.det-act.danger:hover { background: var(--red-dim); color: var(--red); }
+
+.det-body { flex: 1; overflow-y: auto; padding: 16px; }
+
+.det-title {
+  font-size: 16px; font-weight: 500; letter-spacing: -0.02em;
+  width: 100%; background: transparent; resize: none; line-height: 1.4;
+  min-height: 26px; color: var(--text-primary);
+}
+
+.det-fields { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+.df-row { display: grid; grid-template-columns: 80px 1fr; align-items: center; gap: 6px; }
+.df-label { font-size: 11px; color: var(--text-muted); font-weight: 500; }
+.df-val { font-size: 13px; color: var(--text-secondary); }
+.df-val input, .df-val select {
+  width: 100%; padding: 4px 7px;
+  background: var(--bg-surface-2); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); color: var(--text-primary); font-size: 12px;
+  transition: border-color var(--transition);
+}
+.df-val input:focus, .df-val select:focus { border-color: var(--accent-dim); }
+
+.det-notes-label {
+  font-size: 11px; color: var(--text-muted); font-weight: 500;
+  margin-top: 16px; margin-bottom: 4px;
+}
+.det-notes {
+  width: 100%; min-height: 80px; padding: 8px;
+  background: var(--bg-surface-2); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); color: var(--text-primary);
+  font-size: 13px; line-height: 1.5; resize: vertical;
+}
+.det-notes:focus { border-color: var(--accent-dim); }
+
+.det-subtasks { margin-top: 18px; }
+.det-sub-head {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 6px;
+}
+.sub-row {
+  display: flex; align-items: center; gap: 7px; padding: 4px 0;
+}
+.sub-row .t-check { width: 14px; height: 14px; }
+.sub-row .sub-name { font-size: 12px; color: var(--text-secondary); }
+.sub-row.completed .sub-name { color: var(--text-muted); text-decoration: line-through; }
+
+/* ================================================================
+   MODALS
+   ================================================================ */
+.modal-bg {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.55); backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100; animation: fadeIn 120ms ease-out;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.modal {
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); width: 460px; max-height: 80vh;
+  overflow-y: auto; padding: 22px;
+  animation: modalUp 180ms ease-out;
+}
+@keyframes modalUp {
+  from { transform: translateY(8px) scale(0.98); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+.modal h3 { font-size: 15px; font-weight: 600; margin-bottom: 16px; letter-spacing: -0.02em; }
+.fg { margin-bottom: 12px; }
+.fg label { display: block; font-size: 11px; font-weight: 500; color: var(--text-muted); margin-bottom: 3px; }
+.fg input, .fg textarea, .fg select {
+  width: 100%; padding: 7px 9px;
+  background: var(--bg-surface-2); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); color: var(--text-primary);
+  transition: border-color var(--transition);
+}
+.fg input:focus, .fg textarea:focus, .fg select:focus { border-color: var(--accent-dim); }
+.fg textarea { min-height: 70px; resize: vertical; font-family: var(--font-mono); font-size: 12px; }
+.fg .fg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 16px; }
+.btn-ghost {
+  padding: 6px 14px; font-size: 12px; font-weight: 500;
+  color: var(--text-secondary); border-radius: var(--radius);
+  transition: all var(--transition);
+}
+.btn-ghost:hover { background: var(--bg-surface-2); color: var(--text-primary); }
+.btn-primary {
+  padding: 6px 18px; font-size: 12px; font-weight: 500;
+  color: var(--bg-root); background: var(--accent);
+  border-radius: var(--radius); transition: background var(--transition);
+}
+.btn-primary:hover { background: var(--accent-hover); }
+
+/* ================================================================
+   MARKDOWN RENDERING
+   ================================================================ */
+.md h1 { font-size: 16px; font-weight: 600; margin: 10px 0 4px; color: var(--text-primary); }
+.md h2 { font-size: 14px; font-weight: 600; margin: 8px 0 3px; color: var(--text-primary); }
+.md h3 { font-size: 13px; font-weight: 600; margin: 6px 0 2px; color: var(--text-primary); }
+.md p { margin: 3px 0; }
+.md ul, .md ol { margin: 3px 0 3px 18px; }
+.md li { margin: 1px 0; }
+.md strong { font-weight: 600; color: var(--text-primary); }
+.md em { font-style: italic; }
+.md code {
+  font-family: var(--font-mono); font-size: 0.9em;
+  background: var(--bg-surface-3); padding: 1px 4px; border-radius: 3px;
+}
+.md a { color: var(--accent); text-decoration: none; }
+.md a:hover { text-decoration: underline; }
+.md pre {
+  background: var(--bg-surface-2); padding: 8px 10px; border-radius: var(--radius);
+  font-family: var(--font-mono); font-size: 12px; overflow-x: auto; margin: 4px 0;
+}
+
+/* ================================================================
+   EMPTY / LOADING / TOAST
+   ================================================================ */
+.empty {
+  text-align: center; padding: 50px 20px; color: var(--text-tertiary);
+}
+.empty .e-icon { font-size: 30px; margin-bottom: 10px; opacity: 0.3; }
+.empty p { font-size: 13px; }
+.loading { display: flex; justify-content: center; padding: 40px; color: var(--text-tertiary); font-size: 13px; }
+.toast {
+  position: fixed; bottom: 16px; right: 16px;
+  padding: 8px 16px; background: var(--bg-surface-2);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 12px; z-index: 200; animation: fadeIn 150ms ease-out;
+}
+
+/* ================================================================
+   PHASE 3 OVERRIDES
+   ================================================================ */
+#app {
+  grid-template-columns: 250px minmax(0, 1fr) 0;
+  transition: grid-template-columns 180ms ease;
+}
+#app.chat-open { grid-template-columns: 250px minmax(0, 1fr) 400px; }
+
+.header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  transition: all var(--transition);
+}
+.chat-toggle:hover { border-color: var(--border); color: var(--text-primary); }
+.chat-toggle.active {
+  background: var(--accent-dim);
+  border-color: transparent;
+  color: var(--accent);
+}
+.chat-toggle .kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-surface-3);
+  color: var(--text-muted);
+}
+
+.chat-resize-handle {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+}
+.chat-resize-handle:hover,
+.chat-resize-handle.active {
+  background: var(--accent);
+  opacity: 0.5;
+}
+.chat-drawer {
+  position: relative;
+  width: 400px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-subtle);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(22px);
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+#app.chat-open .chat-drawer {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.chat-head {
+  padding: 18px 16px 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.chat-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.chat-context {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.chat-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chat-head-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-radius: var(--radius);
+  transition: all var(--transition);
+}
+.chat-head-btn:hover { background: var(--bg-surface-2); color: var(--text-primary); }
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 14px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chat-empty {
+  margin: auto 8px;
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  background: linear-gradient(180deg, rgba(255,255,255,0.01), transparent);
+}
+
+.chat-row {
+  display: flex;
+}
+.chat-row.user { justify-content: flex-end; }
+.chat-row.assistant,
+.chat-row.tool { justify-content: flex-start; }
+
+.chat-msg {
+  max-width: 92%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  line-height: 1.6;
+  font-size: 13px;
+  border: 1px solid transparent;
+  overflow-wrap: anywhere;
+}
+.chat-msg.user {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  border-bottom-right-radius: 6px;
+}
+.chat-msg.assistant {
+  background: var(--bg-surface-2);
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+  border-bottom-left-radius: 6px;
+}
+.chat-msg.user .chat-plain { white-space: pre-wrap; }
+.chat-msg.assistant .md p:first-child { margin-top: 0; }
+.chat-msg.assistant .md p:last-child { margin-bottom: 0; }
+
+.chat-tool-card {
+  width: 100%;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.chat-tool-card summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.chat-tool-card summary::-webkit-details-marker { display: none; }
+.chat-tool-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+}
+.chat-tool-state {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.chat-tool-card.complete .chat-tool-state { color: var(--green); }
+.chat-tool-card.error .chat-tool-state { color: var(--red); }
+.chat-tool-body {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+.chat-tool-body pre {
+  margin-top: 10px;
+  padding: 10px;
+  background: var(--bg-root);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-compose {
+  border-top: 1px solid var(--border-subtle);
+  padding: 12px 14px 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,0), rgba(255,255,255,0.02));
+}
+.chat-compose textarea {
+  width: 100%;
+  min-height: 84px;
+  max-height: 180px;
+  resize: vertical;
+  padding: 10px 12px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.chat-compose textarea:focus { border-color: var(--accent-dim); }
+.chat-compose textarea:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+.chat-compose-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.chat-status {
+  min-height: 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.detail-modal-bg {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(4px);
+  z-index: 160;
+  animation: fadeIn 120ms ease-out;
+}
+.detail-modal {
+  width: min(680px, calc(100vw - 40px));
+  max-height: min(82vh, 900px);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  animation: modalUp 180ms ease-out;
+}
+.detail-modal .det-head {
+  padding: 14px 16px;
+  background: rgba(255,255,255,0.01);
+}
+.detail-modal .det-body {
+  max-height: calc(82vh - 60px);
+}
+
+@media (max-width: 1100px) {
+  #app.chat-open { grid-template-columns: 250px minmax(0, 1fr) 0; }
+  .chat-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 140;
+    width: min(400px, calc(100vw - 24px));
+    box-shadow: -18px 0 40px rgba(0, 0, 0, 0.32);
+  }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-resize-handle" id="sidebar-resize-handle"></div>
+    <div class="sidebar-brand">
+      <div class="mark">T</div>
+      <span>Taskflow</span>
+    </div>
+
+    <div class="sb-search">
+      <div class="wrap">
+        <input type="text" id="search-input" placeholder="Search..." />
+        <span class="hint">/</span>
+      </div>
+    </div>
+
+    <div class="sb-nav">
+      <div class="sb-item" data-view="active" onclick="goActive()">
+        <span class="ic">&rsaquo;</span> What's Next
+        <span class="badge b-blue" id="badge-active">-</span>
+      </div>
+      <div class="sb-item" data-view="backlog" onclick="goBacklog()">
+        <span class="ic">*</span> Backlog
+        <span class="badge b-orange" id="badge-backlog">-</span>
+      </div>
+      <div class="sb-item" data-view="overdue" onclick="goOverdue()">
+        <span class="ic">!</span> Overdue
+        <span class="badge b-red" id="badge-overdue">-</span>
+      </div>
+    </div>
+
+    <div id="sidebar-projects"></div>
+
+    <button class="sb-new-proj" onclick="openProjectModal()">+ New Project</button>
+  </div>
+
+  <div class="main">
+    <div class="main-header" id="main-header">
+      <span class="h-icon" id="h-icon"></span>
+      <h2 id="h-title">What's Next</h2>
+      <span class="h-meta" id="h-meta"></span>
+      <div class="header-actions">
+        <button class="chat-toggle" id="chat-toggle" onclick="toggleChat()">
+          <span>Chat</span>
+          <span class="kbd">C</span>
+        </button>
+      </div>
+    </div>
+    <div class="toolbar" id="toolbar" style="display:none">
+      <button class="tb-btn active" data-f="open" onclick="setFilter('open')">Open</button>
+      <button class="tb-btn" data-f="completed" onclick="setFilter('completed')">Done</button>
+      <button class="tb-btn" data-f="all" onclick="setFilter('all')">All</button>
+      <div class="tb-spacer"></div>
+      <button class="tb-add" onclick="openTaskModal()">+ Task</button>
+    </div>
+    <div class="content" id="content">
+      <div class="loading">Loading...</div>
+    </div>
+  </div>
+
+  <aside class="chat-drawer" id="chat-drawer">
+    <div class="chat-resize-handle" id="chat-resize-handle"></div>
+    <div class="chat-head">
+      <div>
+        <div class="chat-title">Claude</div>
+        <div class="chat-context" id="chat-context">Viewing: What's Next</div>
+      </div>
+      <div class="chat-head-actions">
+        <button class="chat-head-btn" onclick="newConversation()">New conversation</button>
+        <button class="chat-head-btn" onclick="toggleChat(false)">&times;</button>
+      </div>
+    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-compose">
+      <textarea id="chat-input" rows="3" placeholder="Ask Claude about this workspace..."></textarea>
+      <div class="chat-compose-row">
+        <span class="chat-status" id="chat-status">Ready</span>
+        <button class="btn-primary" id="chat-send" onclick="sendChat()">Send</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<div class="detail-modal-bg" id="task-detail-modal" onclick="closeDetail(event)">
+  <div class="detail-modal" id="task-detail-shell" onclick="event.stopPropagation()"></div>
+</div>
+
+<!-- Create project modal -->
+<div class="modal-bg" id="modal-project" style="display:none" onclick="closeModal('modal-project',event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3>New Project</h3>
+    <div class="fg"><label>Name</label><input id="np-name" placeholder="Project name" /></div>
+    <div class="fg"><label>Icon (emoji)</label><input id="np-icon" placeholder="e.g. &#128640;" maxlength="4" /></div>
+    <div class="fg"><label>Phase</label>
+      <select id="np-phase">
+        <option value="idea">Idea</option>
+        <option value="planning">Planning</option>
+        <option value="in_progress" selected>In Progress</option>
+      </select>
+    </div>
+    <div class="fg"><label>Plan (markdown)</label><textarea id="np-plan" placeholder="High-level plan..."></textarea></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="hide('modal-project')">Cancel</button>
+      <button class="btn-primary" onclick="submitProject()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Create task modal -->
+<div class="modal-bg" id="modal-task" style="display:none" onclick="closeModal('modal-task',event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3>New Task</h3>
+    <div class="fg"><label>Task name</label><input id="nt-name" placeholder="What needs to be done?" /></div>
+    <div class="fg"><label>Section</label><select id="nt-section"><option value="">No section</option></select></div>
+    <div class="fg fg-row">
+      <div><label>Due date</label><input type="date" id="nt-due" /></div>
+      <div><label>Tags</label><input id="nt-tags" placeholder="comma-separated" /></div>
+    </div>
+    <div class="fg"><label>Notes</label><textarea id="nt-notes" placeholder="Details..." style="font-family:var(--font-sans)"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="hide('modal-task')">Cancel</button>
+      <button class="btn-primary" onclick="submitTask()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Plan edit modal -->
+<div class="modal-bg" id="modal-plan" style="display:none" onclick="closeModal('modal-plan',event)">
+  <div class="modal" onclick="event.stopPropagation()" style="width:560px">
+    <h3 id="mp-title">Edit Plan</h3>
+    <div class="fg"><textarea id="mp-text" style="min-height:200px" placeholder="Write your plan in markdown..."></textarea></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="hide('modal-plan')">Cancel</button>
+      <button class="btn-primary" id="mp-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const CHAT_STORAGE_KEY = 'taskflow.chat.messages.v1'
+
+/* ================================================================
+   STATE
+   ================================================================ */
+const S = {
+  projects: [],
+  view: 'active',
+  projectId: null,
+  project: null,
+  sections: [],
+  tasks: [],
+  filter: 'open',
+  selTaskId: null,
+  selTask: null,
+  searchTimer: null,
+  lastSearchQuery: '',
+  chat: {
+    open: false,
+    messages: [],
+    streaming: false,
+    currentAssistantText: '',
+    currentAssistantEl: null,
+    toolCards: new Map(),
+  },
+}
+
+/* ================================================================
+   API
+   ================================================================ */
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts })
+  if (!r.ok) {
+    let msg = `API ${r.status}`
+    try {
+      const data = await r.json()
+      msg = data.error || data.detail || msg
+    } catch (_) {}
+    throw new Error(msg)
+  }
+  return r.json()
+}
+
+/* ================================================================
+   MARKDOWN RENDERER (lightweight)
+   ================================================================ */
+function md(src) {
+  if (!src) return ''
+  let html = esc(src)
+  html = html.replace(/```([\s\S]*?)```/g, (_, c) => `<pre><code>${c.trim()}</code></pre>`)
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>')
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>')
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>')
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>')
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>')
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`)
+  html = html.replace(/^(?!<[hulop])(.*\S.*)$/gm, '<p>$1</p>')
+  return html
+}
+
+/* ================================================================
+   INIT
+   ================================================================ */
+async function init() {
+  loadChatMessages()
+  renderChat()
+  updateChatContext()
+  setupKeys()
+  setupSearch()
+  setupChatInput()
+  await loadProjects()
+  await loadBadges()
+  await goActive()
+}
+
+async function loadProjects() {
+  const d = await api('/api/projects')
+  S.projects = d.projects
+  renderSidebar()
+}
+
+async function loadBadges() {
+  const [od, bl, ac] = await Promise.all([
+    api('/api/overdue'),
+    api('/api/backlog'),
+    api('/api/active'),
+  ])
+  document.getElementById('badge-overdue').textContent = od.tasks.length || '0'
+  document.getElementById('badge-backlog').textContent = bl.tasks.length || '0'
+  document.getElementById('badge-active').textContent = ac.projects.length || '0'
+}
+
+/* ================================================================
+   SIDEBAR
+   ================================================================ */
+function renderSidebar() {
+  const el = document.getElementById('sidebar-projects')
+  const phaseOrder = ['in_progress', 'planning', 'idea', 'done', 'reference']
+  const phaseLabels = {
+    in_progress: 'In Progress',
+    planning: 'Planning',
+    idea: 'Ideas',
+    done: 'Done',
+    reference: 'Reference',
+  }
+
+  const active = S.projects.filter(p => !p.archived)
+  const archived = S.projects.filter(p => p.archived)
+
+  let html = ''
+  for (const ph of phaseOrder) {
+    const projs = active.filter(p => p.phase === ph)
+    if (!projs.length) continue
+    html += `<div class="sb-group-label">${phaseLabels[ph] || ph}</div>`
+    html += '<div class="sb-projects">'
+    for (const p of projs) {
+      html += `<div class="sb-proj ${p.id === S.projectId ? 'active' : ''}" onclick="goProject(${p.id})">
+        <span class="phase-dot ph-${p.phase}"></span>
+        <span class="p-icon">${p.icon || ''}</span>
+        <span class="p-name">${esc(p.name)}</span>
+        <span class="p-count">${p.open_count || 0}</span>
+      </div>`
+    }
+    html += '</div>'
+  }
+
+  if (archived.length) {
+    html += `<div class="sb-group-label" style="cursor:pointer;user-select:none" onclick="this.nextElementSibling.classList.toggle('collapsed')">Archived <span style="opacity:.5">${archived.length}</span></div>`
+    html += '<div class="sb-projects collapsed">'
+    for (const p of archived) {
+      html += `<div class="sb-proj ${p.id === S.projectId ? 'active' : ''}" onclick="goProject(${p.id})" style="opacity:.5">
+        <span class="phase-dot ph-${p.phase}"></span>
+        <span class="p-icon">${p.icon || ''}</span>
+        <span class="p-name">${esc(p.name)}</span>
+        <span class="p-count">${p.open_count || 0}</span>
+      </div>`
+    }
+    html += '</div>'
+  }
+
+  el.innerHTML = html
+}
+
+/* ================================================================
+   VIEWS
+   ================================================================ */
+function setView(v) {
+  closeDetail()
+  S.view = v
+  if (v !== 'project') {
+    S.projectId = null
+    S.project = null
+    S.sections = []
+    S.tasks = []
+  }
+  document.querySelectorAll('.sb-item').forEach(i => i.classList.toggle('active', i.dataset.view === v))
+  if (v !== 'project') renderSidebar()
+  updateChatContext()
+}
+
+async function goActive() {
+  setView('active')
+  document.getElementById('toolbar').style.display = 'none'
+  setHeader('', "What's Next", '')
+  const c = document.getElementById('content')
+  c.innerHTML = '<div class="loading">Loading...</div>'
+
+  const data = await api('/api/active')
+  if (!data.projects.length && !data.backlog_count) {
+    c.innerHTML = '<div class="empty"><div class="e-icon">&#9745;</div><p>No active projects yet. Create one to get started.</p></div>'
+    updateChatContext()
+    return
+  }
+
+  let html = '<div class="dash-grid">'
+  for (const p of data.projects) {
+    html += `<div class="dash-card" onclick="goProject(${p.id})">
+      <div class="dc-top">
+        <span class="dc-icon">${p.icon || ''}</span>
+        <span class="dc-name">${esc(p.name)}</span>
+      </div>
+      <div class="dc-tasks">
+        ${p.tasks.length ? p.tasks.map(t => `
+          <div class="dc-task">
+            <span class="dc-dot"></span>
+            <span class="dc-t-name">${esc(t.name)}</span>
+            ${t.due_date ? `<span class="dc-due ${dueClass(t.due_date)}">${t.due_date}</span>` : ''}
+          </div>
+        `).join('') : '<div class="dash-empty">No open tasks</div>'}
+      </div>
+    </div>`
+  }
+  html += '</div>'
+
+  if (data.backlog_count > 0) {
+    html += `<div class="dash-backlog" onclick="goBacklog()">
+      <span class="dbl-label">Backlog</span>
+      <span class="dbl-count">${data.backlog_count} items</span>
+    </div>`
+  }
+
+  c.innerHTML = html
+  updateChatContext()
+}
+
+async function goBacklog() {
+  setView('backlog')
+  document.getElementById('toolbar').style.display = 'none'
+  setHeader('*', 'Backlog', '')
+  const c = document.getElementById('content')
+  c.innerHTML = '<div class="loading">Loading...</div>'
+  const data = await api('/api/backlog')
+  document.getElementById('h-meta').textContent = `${data.tasks.length} items`
+  renderFlatTasks(data.tasks, c)
+  updateChatContext()
+}
+
+async function goOverdue() {
+  setView('overdue')
+  document.getElementById('toolbar').style.display = 'none'
+  setHeader('!', 'Overdue', '')
+  const c = document.getElementById('content')
+  c.innerHTML = '<div class="loading">Loading...</div>'
+  const data = await api('/api/overdue')
+  document.getElementById('h-meta').textContent = `${data.tasks.length} tasks`
+  renderFlatTasks(data.tasks, c)
+  updateChatContext()
+}
+
+async function goProject(id) {
+  closeDetail()
+  S.projectId = id
+  S.view = 'project'
+  S.filter = 'open'
+  S.selTask = null
+  document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'))
+  renderSidebar()
+  document.getElementById('toolbar').style.display = 'flex'
+  document.querySelectorAll('.tb-btn').forEach(b => b.classList.toggle('active', b.dataset.f === 'open'))
+
+  const c = document.getElementById('content')
+  c.innerHTML = '<div class="loading">Loading...</div>'
+
+  const data = await api(`/api/projects/${id}`)
+  S.project = data.project
+  S.sections = data.sections
+  S.tasks = data.tasks
+
+  setHeader(S.project.icon || '', S.project.name, '')
+  renderPhaseSelect()
+  renderProject()
+  updateChatContext()
+}
+
+function renderPhaseSelect() {
+  if (!S.project) return
+  const phases = ['idea', 'planning', 'in_progress', 'done', 'reference']
+  const labels = { idea: 'Idea', planning: 'Planning', in_progress: 'In Progress', done: 'Done', reference: 'Reference' }
+  const sel = document.createElement('select')
+  sel.className = `phase-select ph-s-${S.project.phase}`
+  for (const ph of phases) {
+    const o = document.createElement('option')
+    o.value = ph
+    o.textContent = labels[ph]
+    if (ph === S.project.phase) o.selected = true
+    sel.appendChild(o)
+  }
+  sel.onchange = async () => {
+    await api(`/api/projects/${S.project.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ phase: sel.value }),
+    })
+    sel.className = `phase-select ph-s-${sel.value}`
+    S.project.phase = sel.value
+    await loadProjects()
+    await loadBadges()
+    updateChatContext()
+  }
+  const hdr = document.getElementById('main-header')
+  const old = hdr.querySelector('.phase-select')
+  if (old) old.remove()
+  hdr.appendChild(sel)
+}
+
+function renderProject() {
+  if (!S.project) return
+  const c = document.getElementById('content')
+  const tasks = filteredTasks()
+  const openTasks = S.tasks.filter(t => t.status === 'open')
+  const completedTasks = S.tasks.filter(t => t.status === 'completed')
+  document.getElementById('h-meta').textContent = `${openTasks.length} open`
+
+  let html = ''
+  html += `<div class="plan-area">
+    <div class="plan-label">Plan</div>
+    <div class="plan-content md">${md(S.project.plan)}</div>
+    <button class="plan-edit" onclick="editPlan('project')">Edit</button>
+  </div>`
+
+  const ungrouped = tasks.filter(t => !t.section_id)
+  for (const sec of S.sections) {
+    const secTasks = tasks.filter(t => t.section_id === sec.id)
+    const secOpen = S.tasks.filter(t => t.section_id === sec.id && t.status === 'open')
+    if (!secTasks.length && S.filter !== 'all') continue
+    html += `<div class="spec-group" data-sec="${sec.id}">
+      <div class="spec-header" onclick="toggleSpec(this)">
+        <span class="spec-chevron">&#9660;</span>
+        <span class="spec-name">${esc(sec.name)}</span>
+        <span class="spec-count">${secOpen.length}</span>
+        ${sec.plan ? `<button class="spec-plan-toggle" onclick="event.stopPropagation();toggleSpecPlan(this)">plan</button>` : ''}
+        <button class="spec-plan-toggle" onclick="event.stopPropagation();editPlan('section',${sec.id})" style="margin-left:${sec.plan ? '2px' : 'auto'}">edit</button>
+      </div>
+      <div class="spec-body">
+        ${sec.plan ? `<div class="spec-plan md" style="display:none">${md(sec.plan)}</div>` : ''}
+        ${secTasks.map(t => taskRow(t)).join('')}
+        ${S.filter !== 'completed' ? inlineAdd(sec.id) : ''}
+      </div>
+    </div>`
+  }
+
+  if (ungrouped.length) {
+    html += `<div class="spec-group">
+      <div class="spec-header" onclick="toggleSpec(this)">
+        <span class="spec-chevron">&#9660;</span>
+        <span class="spec-name">Tasks</span>
+        <span class="spec-count">${ungrouped.filter(t => t.status === 'open').length}</span>
+      </div>
+      <div class="spec-body">
+        ${ungrouped.map(t => taskRow(t)).join('')}
+        ${S.filter !== 'completed' ? inlineAdd(null) : ''}
+      </div>
+    </div>`
+  }
+
+  if (S.filter === 'open' && completedTasks.length) {
+    html += `<div class="completed-toggle" onclick="toggleCompleted(this)">
+      <span class="ct-chev">&#9654;</span>
+      ${completedTasks.length} completed
+    </div>
+    <div class="completed-tasks">
+      ${completedTasks.map(t => taskRow(t)).join('')}
+    </div>`
+  }
+
+  c.innerHTML = html
+}
+
+function filteredTasks() {
+  if (S.filter === 'all') return S.tasks
+  return S.tasks.filter(t => t.status === S.filter)
+}
+
+function setFilter(f) {
+  S.filter = f
+  document.querySelectorAll('.tb-btn').forEach(b => b.classList.toggle('active', b.dataset.f === f))
+  renderProject()
+}
+
+function taskRow(t) {
+  const done = t.status === 'completed'
+  const dc = dueClass(t.due_date, t.status)
+  return `<div class="task-row ${done ? 'completed' : ''} ${t.id === S.selTaskId ? 'selected' : ''}"
+    data-id="${t.id}" onclick="selTask(${t.id})">
+    <div class="t-check ${done ? 'done' : ''}"
+      onclick="event.stopPropagation();toggleTask(${t.id},'${t.status}')"></div>
+    <div class="t-info">
+      <div class="t-name">${esc(t.name)}</div>
+      <div class="t-meta">
+        ${t.due_date ? `<span class="due ${dc}">${t.due_date}</span>` : ''}
+        ${S.view !== 'project' && t.project_name ? `<span class="proj-ref">${esc(t.project_name)}</span>` : ''}
+      </div>
+    </div>
+  </div>`
+}
+
+function inlineAdd(sectionId) {
+  const sectionArg = sectionId == null ? 'null' : sectionId
+  return `<div class="inline-add">
+    <span class="ia-icon">+</span>
+    <input placeholder="Add task..." onkeydown="inlineAddKey(event,${S.projectId},${sectionArg})" />
+  </div>`
+}
+
+async function inlineAddKey(e, projectId, sectionId) {
+  if (e.key !== 'Enter') return
+  const name = e.target.value.trim()
+  if (!name) return
+  await api('/api/tasks', {
+    method: 'POST',
+    body: JSON.stringify({ project_id: projectId, section_id: sectionId, name }),
+  })
+  e.target.value = ''
+  await refreshProject({ reloadSidebar: true })
+  await loadBadges()
+}
+
+function renderFlatTasks(tasks, container) {
+  if (!tasks.length) {
+    container.innerHTML = '<div class="empty"><div class="e-icon">&#10003;</div><p>All clear</p></div>'
+    return
+  }
+  container.innerHTML = tasks.map(t => taskRow(t)).join('')
+}
+
+/* ================================================================
+   TASK DETAIL MODAL
+   ================================================================ */
+async function selTask(id) {
+  S.selTaskId = id
+  document.querySelectorAll('.task-row').forEach(r => r.classList.toggle('selected', +r.dataset.id === id))
+  try {
+    const task = await api(`/api/tasks/${id}`)
+    S.selTask = task
+    renderDetail(task)
+  } catch (err) {
+    closeDetail()
+    toast(err.message || 'Failed to load task')
+  }
+}
+
+function renderDetail(t) {
+  const shell = document.getElementById('task-detail-shell')
+  const done = t.status === 'completed'
+  shell.innerHTML = `
+    <div class="det-head">
+      <button class="det-close" onclick="closeDetail()">&times;</button>
+      <div class="det-actions">
+        <button class="det-act" onclick="toggleTask(${t.id},'${t.status}')">${done ? 'Reopen' : 'Complete'}</button>
+        <button class="det-act danger" onclick="deleteTask(${t.id})">Delete</button>
+      </div>
+    </div>
+    <div class="det-body">
+      <textarea class="det-title" rows="1" onblur="saveField(${t.id},'name',this.value)">${esc(t.name)}</textarea>
+      <div class="det-fields">
+        <div class="df-row">
+          <span class="df-label">Status</span>
+          <span class="df-val">${done ? 'Completed' : 'Open'}</span>
+        </div>
+        ${t.project_name ? `<div class="df-row">
+          <span class="df-label">Project</span>
+          <span class="df-val">${esc(t.project_name)}</span>
+        </div>` : ''}
+        ${t.section_name ? `<div class="df-row">
+          <span class="df-label">Section</span>
+          <span class="df-val">${esc(t.section_name)}</span>
+        </div>` : ''}
+        <div class="df-row">
+          <span class="df-label">Due</span>
+          <div class="df-val"><input type="date" value="${t.due_date || ''}" onchange="saveField(${t.id},'due_date',this.value)" /></div>
+        </div>
+        <div class="df-row">
+          <span class="df-label">Tags</span>
+          <div class="df-val"><input value="${esc((t.tags || []).join(', '))}" placeholder="Add tags..." onblur="saveField(${t.id},'tags',this.value)" /></div>
+        </div>
+      </div>
+      <div class="det-notes-label">Notes</div>
+      <textarea class="det-notes" placeholder="Add notes..." onblur="saveField(${t.id},'notes',this.value)">${esc(t.notes || '')}</textarea>
+      ${t.subtasks?.length ? `
+        <div class="det-subtasks">
+          <div class="det-sub-head">Subtasks (${t.subtasks.length})</div>
+          ${t.subtasks.map(st => `
+            <div class="sub-row ${st.status === 'completed' ? 'completed' : ''}">
+              <div class="t-check ${st.status === 'completed' ? 'done' : ''}" onclick="toggleTask(${st.id},'${st.status}')"></div>
+              <span class="sub-name">${esc(st.name)}</span>
+            </div>`).join('')}
+        </div>` : ''}
+    </div>`
+
+  document.getElementById('task-detail-modal').style.display = 'flex'
+  const ti = shell.querySelector('.det-title')
+  autoResize(ti)
+  ti.addEventListener('input', () => autoResize(ti))
+}
+
+function closeDetail(event) {
+  if (event && event.target !== event.currentTarget) return
+  S.selTaskId = null
+  S.selTask = null
+  document.getElementById('task-detail-modal').style.display = 'none'
+  document.getElementById('task-detail-shell').innerHTML = ''
+  document.querySelectorAll('.task-row.selected').forEach(r => r.classList.remove('selected'))
+}
+
+async function refreshSelectedTask() {
+  if (!S.selTaskId) return
+  try {
+    const task = await api(`/api/tasks/${S.selTaskId}`)
+    S.selTask = task
+    renderDetail(task)
+  } catch (_) {
+    closeDetail()
+  }
+}
+
+/* ================================================================
+   ACTIONS
+   ================================================================ */
+async function toggleTask(id, status) {
+  const ep = status === 'open' ? 'complete' : 'reopen'
+  await api(`/api/tasks/${id}/${ep}`, { method: 'POST' })
+  await Promise.all([
+    refreshCurrentView({ reloadSidebar: true }),
+    loadBadges(),
+  ])
+  if (S.selTaskId) await refreshSelectedTask()
+}
+
+async function saveField(id, field, val) {
+  const body = {}
+  body[field] = val
+  await api(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+  await refreshCurrentView({ reloadSidebar: false })
+  if (S.selTaskId) await refreshSelectedTask()
+}
+
+async function deleteTask(id) {
+  if (!confirm('Delete this task?')) return
+  await api(`/api/tasks/${id}`, { method: 'DELETE' })
+  closeDetail()
+  await Promise.all([
+    refreshCurrentView({ reloadSidebar: true }),
+    loadBadges(),
+  ])
+  toast('Task deleted')
+}
+
+async function refreshCurrentView({ reloadSidebar = true } = {}) {
+  if (S.view === 'project' && S.projectId) await refreshProject({ reloadSidebar })
+  else if (S.view === 'active') await goActive()
+  else if (S.view === 'backlog') await goBacklog()
+  else if (S.view === 'overdue') await goOverdue()
+  else if (S.view === 'search' && S.lastSearchQuery) await runSearch(S.lastSearchQuery, { preserveInput: true })
+  if (reloadSidebar && S.view !== 'project') await loadProjects()
+}
+
+async function refreshProject({ reloadSidebar = false } = {}) {
+  if (!S.projectId) return
+  const data = await api(`/api/projects/${S.projectId}`)
+  S.project = data.project
+  S.sections = data.sections
+  S.tasks = data.tasks
+  renderProject()
+  renderPhaseSelect()
+  if (reloadSidebar) await loadProjects()
+  updateChatContext()
+}
+
+/* ================================================================
+   PLAN EDITING
+   ================================================================ */
+function editPlan(type, secId) {
+  const modal = document.getElementById('modal-plan')
+  const titleEl = document.getElementById('mp-title')
+  const textEl = document.getElementById('mp-text')
+  const saveBtn = document.getElementById('mp-save')
+
+  if (type === 'project') {
+    titleEl.textContent = 'Edit Project Plan'
+    textEl.value = S.project?.plan || ''
+    saveBtn.onclick = async () => {
+      await api(`/api/projects/${S.project.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ plan: textEl.value }),
+      })
+      S.project.plan = textEl.value
+      renderProject()
+      hide('modal-plan')
+      toast('Plan saved')
+    }
+  } else {
+    const sec = S.sections.find(s => s.id === secId)
+    titleEl.textContent = `Edit Spec: ${sec?.name || ''}`
+    textEl.value = sec?.plan || ''
+    saveBtn.onclick = async () => {
+      await api(`/api/sections/${secId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ plan: textEl.value }),
+      })
+      if (sec) sec.plan = textEl.value
+      renderProject()
+      hide('modal-plan')
+      toast('Spec plan saved')
+    }
+  }
+
+  modal.style.display = 'flex'
+  setTimeout(() => textEl.focus(), 80)
+}
+
+/* ================================================================
+   MODALS
+   ================================================================ */
+function openProjectModal() {
+  document.getElementById('np-name').value = ''
+  document.getElementById('np-icon').value = ''
+  document.getElementById('np-phase').value = 'in_progress'
+  document.getElementById('np-plan').value = ''
+  show('modal-project')
+  setTimeout(() => document.getElementById('np-name').focus(), 80)
+}
+
+async function submitProject() {
+  const name = document.getElementById('np-name').value.trim()
+  if (!name) return
+  const data = await api('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({
+      name,
+      icon: document.getElementById('np-icon').value,
+      phase: document.getElementById('np-phase').value,
+      plan: document.getElementById('np-plan').value,
+    }),
+  })
+  hide('modal-project')
+  await Promise.all([loadProjects(), loadBadges()])
+  toast('Project created')
+  if (data.project_id) await goProject(data.project_id)
+}
+
+function openTaskModal() {
+  document.getElementById('nt-name').value = ''
+  document.getElementById('nt-due').value = ''
+  document.getElementById('nt-tags').value = ''
+  document.getElementById('nt-notes').value = ''
+  const sel = document.getElementById('nt-section')
+  sel.innerHTML = '<option value="">No section</option>' +
+    S.sections.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')
+  show('modal-task')
+  setTimeout(() => document.getElementById('nt-name').focus(), 80)
+}
+
+async function submitTask() {
+  const name = document.getElementById('nt-name').value.trim()
+  if (!name) return
+  const secVal = document.getElementById('nt-section').value
+  await api('/api/tasks', {
+    method: 'POST',
+    body: JSON.stringify({
+      project_id: S.projectId,
+      name,
+      section_id: secVal ? +secVal : null,
+      due_date: document.getElementById('nt-due').value || null,
+      tags: document.getElementById('nt-tags').value || null,
+      notes: document.getElementById('nt-notes').value || '',
+    }),
+  })
+  hide('modal-task')
+  await Promise.all([
+    refreshProject({ reloadSidebar: true }),
+    loadBadges(),
+  ])
+  toast('Task created')
+}
+
+/* ================================================================
+   SEARCH
+   ================================================================ */
+function setupSearch() {
+  const inp = document.getElementById('search-input')
+  inp.addEventListener('input', () => {
+    clearTimeout(S.searchTimer)
+    const q = inp.value.trim()
+    if (!q) {
+      if (S.view === 'search') goActive()
+      return
+    }
+    S.searchTimer = setTimeout(() => runSearch(q), 220)
+  })
+}
+
+async function runSearch(q, { preserveInput = false } = {}) {
+  closeDetail()
+  S.view = 'search'
+  S.projectId = null
+  S.project = null
+  S.sections = []
+  S.tasks = []
+  S.lastSearchQuery = q
+  document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'))
+  renderSidebar()
+  document.getElementById('toolbar').style.display = 'none'
+  setHeader('/', `Search: ${q}`, '')
+  if (!preserveInput) document.getElementById('search-input').value = q
+  const c = document.getElementById('content')
+  c.innerHTML = '<div class="loading">Loading...</div>'
+  const data = await api(`/api/search?q=${encodeURIComponent(q)}`)
+  document.getElementById('h-meta').textContent = `${data.results.length} results`
+  renderFlatTasks(data.results, c)
+  updateChatContext()
+}
+
+/* ================================================================
+   CHAT
+   ================================================================ */
+function loadChatMessages() {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    S.chat.messages = Array.isArray(parsed)
+      ? parsed.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string').slice(-50)
+      : []
+  } catch (_) {
+    S.chat.messages = []
+  }
+}
+
+function saveChatMessages() {
+  S.chat.messages = S.chat.messages.slice(-50)
+  localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(S.chat.messages))
+}
+
+function renderChat() {
+  const el = document.getElementById('chat-messages')
+  el.innerHTML = ''
+  if (!S.chat.messages.length) {
+    el.innerHTML = '<div class="chat-empty">Workspace-aware chat lives here. Ask about the current project, request planning help, or let Claude update tasks directly.</div>'
+    return
+  }
+  for (const message of S.chat.messages) appendChatMessage(message.role, message.content, { persist: false })
+}
+
+function clearChatEmptyState() {
+  const empty = document.querySelector('.chat-empty')
+  if (empty) empty.remove()
+}
+
+function appendChatMessage(role, content, { persist = false } = {}) {
+  clearChatEmptyState()
+  const row = document.createElement('div')
+  row.className = `chat-row ${role}`
+
+  const bubble = document.createElement('div')
+  bubble.className = `chat-msg ${role}`
+  if (role === 'assistant') bubble.innerHTML = `<div class="md">${md(content)}</div>`
+  else bubble.innerHTML = `<div class="chat-plain">${esc(content).replace(/\n/g, '<br>')}</div>`
+
+  row.appendChild(bubble)
+  document.getElementById('chat-messages').appendChild(row)
+  scrollChatToBottom()
+
+  if (persist) {
+    S.chat.messages.push({ role, content })
+    saveChatMessages()
+  }
+  return bubble
+}
+
+function ensureStreamingAssistantBubble() {
+  if (S.chat.currentAssistantEl) return S.chat.currentAssistantEl
+  S.chat.currentAssistantEl = appendChatMessage('assistant', '', { persist: false })
+  return S.chat.currentAssistantEl
+}
+
+function updateStreamingAssistant(text) {
+  const bubble = ensureStreamingAssistantBubble()
+  bubble.innerHTML = `<div class="md">${md(text)}</div>`
+  scrollChatToBottom()
+}
+
+function appendToolCard(toolCallId, toolName, toolInput) {
+  clearChatEmptyState()
+  const row = document.createElement('div')
+  row.className = 'chat-row tool'
+  const details = document.createElement('details')
+  details.className = 'chat-tool-card'
+  details.open = true
+  details.innerHTML = `
+    <summary>
+      <span class="chat-tool-name">${esc(toolName)}</span>
+      <span class="chat-tool-state">running</span>
+    </summary>
+    <div class="chat-tool-body">
+      <pre>${esc(formatToolPayload(toolInput))}</pre>
+    </div>`
+  row.appendChild(details)
+  document.getElementById('chat-messages').appendChild(row)
+  S.chat.toolCards.set(toolCallId, details)
+  scrollChatToBottom()
+}
+
+function completeToolCard(toolCallId, toolName, result, error) {
+  const card = S.chat.toolCards.get(toolCallId)
+  if (!card) return
+  const stateEl = card.querySelector('.chat-tool-state')
+  const bodyEl = card.querySelector('.chat-tool-body')
+  if (error) {
+    card.classList.add('error')
+    stateEl.textContent = 'error'
+    bodyEl.innerHTML = `<pre>${esc(formatToolPayload(error))}</pre>`
+  } else {
+    card.classList.add('complete')
+    stateEl.textContent = 'done'
+    bodyEl.innerHTML = `<pre>${esc(formatToolPayload(result))}</pre>`
+  }
+  card.open = false
+  scrollChatToBottom()
+}
+
+function formatToolPayload(value) {
+  if (value == null) return '{}'
+  let text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  if (text.length > 900) text = `${text.slice(0, 900)}…`
+  return text
+}
+
+function scrollChatToBottom() {
+  const el = document.getElementById('chat-messages')
+  requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
+}
+
+function setChatStatus(text) {
+  document.getElementById('chat-status').textContent = text
+}
+
+function setChatStreaming(active) {
+  S.chat.streaming = active
+  document.getElementById('chat-send').disabled = active
+  document.getElementById('chat-send').textContent = active ? 'Thinking...' : 'Send'
+  document.getElementById('chat-input').disabled = active
+  setChatStatus(active ? 'Streaming…' : 'Ready')
+}
+
+function chatContextLabel() {
+  if (S.view === 'project') {
+    if (S.project?.name) return `Viewing: ${S.project.name}`
+    if (S.projectId) return `Viewing: Project #${S.projectId}`
+  }
+  if (S.view === 'search') return S.lastSearchQuery ? `Viewing: Search for "${S.lastSearchQuery}"` : 'Viewing: Search'
+  if (S.view === 'backlog') return 'Viewing: Backlog'
+  if (S.view === 'overdue') return 'Viewing: Overdue'
+  return "Viewing: What's Next"
+}
+
+function updateChatContext() {
+  document.getElementById('chat-context').textContent = chatContextLabel()
+}
+
+function toggleChat(force) {
+  const next = typeof force === 'boolean' ? force : !S.chat.open
+  S.chat.open = next
+  const app = document.getElementById('app')
+  const drawer = document.getElementById('chat-drawer')
+  app.classList.toggle('chat-open', next)
+  document.getElementById('chat-toggle').classList.toggle('active', next)
+  if (window.innerWidth > 1100) {
+    updateGridColumns();
+  } else {
+    app.style.gridTemplateColumns = '';
+  }
+  if (next && !S.chat.streaming) setTimeout(() => document.getElementById('chat-input').focus(), 80)
+}
+
+/* ---- Sidebar resize ---- */
+(function() {
+  const handle = document.getElementById('sidebar-resize-handle');
+  const app = document.getElementById('app');
+  const sidebar = document.getElementById('sidebar');
+  const MIN_W = 180, MAX_W = 500;
+  let dragging = false, startX, startW;
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startW = sidebar.offsetWidth;
+    handle.classList.add('active');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.min(MAX_W, Math.max(MIN_W, startW + (e.clientX - startX)));
+    sidebar.style.width = w + 'px';
+    updateGridColumns();
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+function getSidebarWidth() {
+  const sb = document.getElementById('sidebar');
+  return parseInt(sb.style.width) || 250;
+}
+
+function updateGridColumns() {
+  const app = document.getElementById('app');
+  const sw = getSidebarWidth();
+  if (S.chat.open && window.innerWidth > 1100) {
+    const cw = parseInt(document.getElementById('chat-drawer').style.width) || 400;
+    app.style.gridTemplateColumns = `${sw}px minmax(0, 1fr) ${cw}px`;
+  } else {
+    app.style.gridTemplateColumns = `${sw}px minmax(0, 1fr) 0`;
+  }
+}
+
+/* ---- Chat drawer resize ---- */
+(function() {
+  const handle = document.getElementById('chat-resize-handle');
+  const app = document.getElementById('app');
+  const drawer = document.getElementById('chat-drawer');
+  const MIN_W = 300, MAX_W = 900;
+  let dragging = false, startX, startW;
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startW = drawer.offsetWidth;
+    handle.classList.add('active');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.min(MAX_W, Math.max(MIN_W, startW + (startX - e.clientX)));
+    drawer.style.width = w + 'px';
+    updateGridColumns();
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+function newConversation() {
+  if (S.chat.streaming) return
+  S.chat.messages = []
+  S.chat.currentAssistantText = ''
+  S.chat.currentAssistantEl = null
+  S.chat.toolCards = new Map()
+  saveChatMessages()
+  renderChat()
+  setChatStatus('Ready')
+}
+
+function setupChatInput() {
+  const input = document.getElementById('chat-input')
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendChat()
+    }
+  })
+}
+
+function buildChatPayload() {
+  const context = { view: S.view }
+  if (S.view === 'project' && S.projectId) context.project_id = S.projectId
+  if (S.view === 'search' && S.lastSearchQuery) context.search_query = S.lastSearchQuery
+  return {
+    messages: S.chat.messages,
+    context,
+  }
+}
+
+async function sendChat() {
+  if (S.chat.streaming) return
+  const input = document.getElementById('chat-input')
+  const text = input.value.trim()
+  if (!text) return
+
+  toggleChat(true)
+  appendChatMessage('user', text, { persist: true })
+  input.value = ''
+  S.chat.currentAssistantText = ''
+  S.chat.currentAssistantEl = null
+  S.chat.toolCards = new Map()
+  setChatStreaming(true)
+
+  try {
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildChatPayload()),
+    })
+
+    if (!response.ok) {
+      let msg = `Chat unavailable (${response.status})`
+      try {
+        const data = await response.json()
+        msg = data.error || msg
+      } catch (_) {}
+      throw new Error(msg)
+    }
+
+    if (!response.body) throw new Error('Chat stream unavailable')
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let finished = false
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() || ''
+
+      for (const part of parts) {
+        const lines = part.split('\n').filter(line => line.startsWith('data: '))
+        if (!lines.length) continue
+        const payload = lines.map(line => line.slice(6)).join('\n')
+        if (!payload) continue
+        const event = JSON.parse(payload)
+        finished = await handleChatEvent(event) || finished
+      }
+    }
+
+    if (!finished) finishChatStream(S.chat.currentAssistantText)
+  } catch (err) {
+    appendChatMessage('assistant', `Chat error: ${err.message || err}`, { persist: false })
+    setChatStreaming(false)
+    setChatStatus('Error')
+  }
+}
+
+async function handleChatEvent(event) {
+  if (!event || !event.type) return false
+
+  if (event.type === 'heartbeat') return false
+
+  if (event.type === 'text_delta') {
+    S.chat.currentAssistantText += event.text || ''
+    updateStreamingAssistant(S.chat.currentAssistantText)
+    return false
+  }
+
+  if (event.type === 'tool_call_start') {
+    appendToolCard(event.tool_call_id, event.tool_name, event.tool_input)
+    return false
+  }
+
+  if (event.type === 'tool_call_complete') {
+    completeToolCard(event.tool_call_id, event.tool_name, event.result, event.error)
+    return false
+  }
+
+  if (event.type === 'taskflow_mutation') {
+    await handleChatMutation(event)
+    return false
+  }
+
+  if (event.type === 'done') {
+    finishChatStream(event.assistant_text || '')
+    return true
+  }
+
+  if (event.type === 'error') {
+    appendChatMessage('assistant', `Chat error: ${event.error || 'Unknown error'}`, { persist: false })
+    setChatStreaming(false)
+    setChatStatus('Error')
+    return true
+  }
+
+  return false
+}
+
+function finishChatStream(assistantText) {
+  if (assistantText) {
+    updateStreamingAssistant(assistantText)
+    S.chat.messages.push({ role: 'assistant', content: assistantText })
+    saveChatMessages()
+  } else if (S.chat.currentAssistantEl) {
+    S.chat.currentAssistantEl.parentElement.remove()
+  }
+  S.chat.currentAssistantText = ''
+  S.chat.currentAssistantEl = null
+  S.chat.toolCards = new Map()
+  setChatStreaming(false)
+}
+
+async function handleChatMutation(event) {
+  await Promise.all([loadProjects(), loadBadges()])
+  await refreshCurrentView({ reloadSidebar: false })
+  if (S.selTaskId && event.entity_type === 'task') await refreshSelectedTask()
+}
+
+/* ================================================================
+   HELPERS
+   ================================================================ */
+function setHeader(icon, title, meta) {
+  document.getElementById('h-icon').textContent = icon
+  document.getElementById('h-title').textContent = title
+  document.getElementById('h-meta').textContent = meta
+  const old = document.getElementById('main-header').querySelector('.phase-select')
+  if (old) old.remove()
+}
+
+function toggleSpec(hdr) {
+  hdr.classList.toggle('collapsed')
+  hdr.closest('.spec-group').classList.toggle('collapsed')
+}
+
+function toggleSpecPlan(btn) {
+  const plan = btn.closest('.spec-group').querySelector('.spec-plan')
+  if (plan) plan.style.display = plan.style.display === 'none' ? 'block' : 'none'
+}
+
+function toggleCompleted(el) {
+  el.classList.toggle('open')
+  el.nextElementSibling.classList.toggle('show')
+}
+
+function show(id) { document.getElementById(id).style.display = 'flex' }
+function hide(id) { document.getElementById(id).style.display = 'none' }
+function closeModal(id, e) { if (e.target === e.currentTarget) hide(id) }
+
+function esc(s) {
+  if (!s) return ''
+  const d = document.createElement('div')
+  d.textContent = s
+  return d.innerHTML
+}
+
+function dueClass(due, status) {
+  if (!due || status === 'completed') return ''
+  const today = new Date().toISOString().slice(0, 10)
+  const soon = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10)
+  if (due < today) return 'overdue'
+  if (due <= soon) return 'soon'
+  return ''
+}
+
+function autoResize(el) {
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
+
+function toast(msg) {
+  const t = document.createElement('div')
+  t.className = 'toast'
+  t.textContent = msg
+  document.body.appendChild(t)
+  setTimeout(() => t.remove(), 2000)
+}
+
+function setupKeys() {
+  document.addEventListener('keydown', e => {
+    const key = e.key.toLowerCase()
+    if (key === '/' && !editing()) {
+      e.preventDefault()
+      document.getElementById('search-input').focus()
+    }
+    if (key === 'c' && !editing()) {
+      e.preventDefault()
+      toggleChat()
+    }
+    if (e.key === 'Escape') {
+      if (document.getElementById('modal-project').style.display === 'flex') hide('modal-project')
+      else if (document.getElementById('modal-task').style.display === 'flex') hide('modal-task')
+      else if (document.getElementById('modal-plan').style.display === 'flex') hide('modal-plan')
+      else if (document.getElementById('task-detail-modal').style.display === 'flex') closeDetail()
+      document.getElementById('search-input').blur()
+    }
+    if (key === 'n' && !editing() && S.projectId) {
+      e.preventDefault()
+      openTaskModal()
+    }
+  })
+}
+
+function editing() {
+  const el = document.activeElement
+  return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')
+}
+
+init()
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+.claude/
+.excel_mcp_server.pid
+exports/
+logs/
+.env
+data/taskflow-web.pid
+data/agent_memory.md
+data/repos.json

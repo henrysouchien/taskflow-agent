@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "taskflow-agent"
+version = "0.1.0"
+description = "Lightweight project and task manager with MCP tools for Claude Code"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Henry Chien" },
+]
+keywords = ["mcp", "task-manager", "project-manager", "claude", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Scheduling",
+]
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+web = ["fastapi", "uvicorn", "python-dotenv"]
+
+[project.scripts]
+taskflow = "src.server:main"
+taskflow-web = "src.web:main"
+
+[project.urls]
+Repository = "https://github.com/henrysouchien/taskflow-agent"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "static/",
+    "Makefile",
+    "pyproject.toml",
+    "README.md",
+]
