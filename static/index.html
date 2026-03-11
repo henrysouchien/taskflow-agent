@@ -162,6 +162,7 @@ button { cursor: pointer; }
 .sb-item .badge.b-red { color: var(--red); background: var(--red-dim); }
 .sb-item .badge.b-orange { color: var(--orange); background: var(--orange-dim); }
 .sb-item .badge.b-blue { color: var(--accent); background: var(--accent-dim); }
+.sb-item .badge.b-green { color: var(--green); background: var(--green-dim); }
 
 /* project groups */
 .sb-group-label {
@@ -169,6 +170,11 @@ button { cursor: pointer; }
   font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--text-muted);
 }
+
+#sidebar-projects { flex: 1; overflow-y: auto; }
+
+.sb-group-toggle { float: right; cursor: pointer; opacity: .4; transition: opacity var(--transition); }
+.sb-group-toggle:hover { opacity: 1; }
 
 .sb-projects {
   flex: 1; overflow-y: auto; padding: 0 10px 12px;
@@ -340,6 +346,170 @@ button { cursor: pointer; }
   font-family: var(--font-mono); font-size: 11px;
   color: var(--accent); background: var(--accent-dim);
   padding: 1px 7px; border-radius: 8px;
+}
+
+/* ================================================================
+   TODAY VIEW
+   ================================================================ */
+.today-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.today-section {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+}
+
+.today-section-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.today-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.today-section-head h3 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.today-section-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.today-section-head .spacer { flex: 1; }
+
+.today-action {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  transition: all var(--transition);
+}
+.today-action:hover { border-color: var(--border); color: var(--text-primary); }
+
+.today-goals-list,
+.today-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.today-goal-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.today-goal-bullet {
+  color: var(--green);
+  opacity: 0.85;
+}
+
+.goal-timeframe {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-surface-3);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.today-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.today-item + .today-item {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.today-item-body {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.today-item-body:hover .today-item-name { color: var(--accent-hover); }
+
+.today-item-name {
+  font-size: 14px;
+  color: var(--text-primary);
+  word-break: break-word;
+  transition: color var(--transition);
+}
+
+.today-item.completed .today-item-name {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-muted);
+}
+
+.today-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.today-item-meta .due {
+  font-family: var(--font-mono);
+}
+
+.today-item-meta .due.overdue { color: var(--red); }
+.today-item-meta .due.soon { color: var(--orange); }
+
+.today-empty,
+.today-goals-empty,
+.goal-empty,
+.fp-empty {
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+}
+
+.today-goals-empty { margin-top: 2px; }
+
+.today-carried .today-item {
+  align-items: center;
+}
+
+.today-carried-add {
+  min-width: 34px;
+  text-align: center;
 }
 
 /* ================================================================
@@ -610,6 +780,156 @@ button { cursor: pointer; }
   border-radius: var(--radius); transition: background var(--transition);
 }
 .btn-primary:hover { background: var(--accent-hover); }
+
+.fp-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.fp-result {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  transition: all var(--transition);
+}
+
+.fp-result:hover {
+  border-color: var(--border);
+  background: var(--bg-hover);
+}
+
+.fp-result.completed .fp-name {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.fp-name {
+  display: block;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.fp-meta {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.goal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.goal-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+
+.goal-row.completed { opacity: 0.74; }
+
+.goal-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.goal-title {
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.goal-row.completed .goal-title {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.goal-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.goal-status {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.goal-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.goal-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-radius: var(--radius);
+  transition: all var(--transition);
+}
+
+.goal-btn:hover {
+  background: var(--bg-surface-3);
+  color: var(--text-primary);
+}
+
+.goal-btn.danger:hover {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.goal-add,
+.goal-edit-fields {
+  display: grid;
+  gap: 8px;
+}
+
+.goal-add {
+  grid-template-columns: minmax(0, 1fr) 110px auto;
+  margin-top: 14px;
+}
+
+.goal-edit-fields {
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 110px;
+}
+
+.goal-add input,
+.goal-add select,
+.goal-edit-fields input,
+.goal-edit-fields select {
+  width: 100%;
+  padding: 7px 9px;
+  background: var(--bg-root);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+}
+
+.goal-add input:focus,
+.goal-add select:focus,
+.goal-edit-fields input:focus,
+.goal-edit-fields select:focus {
+  border-color: var(--accent-dim);
+}
 
 /* ================================================================
    MARKDOWN RENDERING
@@ -957,6 +1277,10 @@ button { cursor: pointer; }
     </div>
 
     <div class="sb-nav">
+      <div class="sb-item" data-view="today" onclick="goToday()">
+        <span class="ic">&#9673;</span> Today
+        <span class="badge b-green" id="badge-today">-</span>
+      </div>
       <div class="sb-item" data-view="active" onclick="goActive()">
         <span class="ic">&rsaquo;</span> What's Next
         <span class="badge b-blue" id="badge-active">-</span>
@@ -1078,6 +1402,35 @@ button { cursor: pointer; }
   </div>
 </div>
 
+<!-- Focus picker modal -->
+<div class="modal-bg" id="modal-focus-picker" style="display:none" onclick="closeModal('modal-focus-picker',event)">
+  <div class="modal" onclick="event.stopPropagation()" style="width:500px">
+    <h3>Add to Today</h3>
+    <div class="fg">
+      <input type="text" id="fp-search" placeholder="Search tasks..." oninput="focusPickerSearch(this.value)" autofocus />
+    </div>
+    <div id="fp-results" class="fp-results"></div>
+  </div>
+</div>
+
+<!-- Goal editor modal -->
+<div class="modal-bg" id="modal-goals" style="display:none" onclick="closeModal('modal-goals',event)">
+  <div class="modal" onclick="event.stopPropagation()" style="width:500px">
+    <h3>Goals</h3>
+    <div id="goal-list" class="goal-list"></div>
+    <div class="goal-add">
+      <input type="text" id="goal-text" placeholder="New goal..." />
+      <select id="goal-timeframe">
+        <option value="day">Day</option>
+        <option value="week" selected>Week</option>
+        <option value="month">Month</option>
+        <option value="quarter">Quarter</option>
+      </select>
+      <button class="btn-primary" onclick="addGoal()">Add</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const CHAT_STORAGE_KEY = 'taskflow.chat.messages.v1'
 
@@ -1094,15 +1447,24 @@ const S = {
   filter: 'open',
   selTaskId: null,
   selTask: null,
+  todayDate: '',
+  todayData: null,
   searchTimer: null,
   lastSearchQuery: '',
+  focusPickerTimer: null,
+  focusPickerSeq: 0,
+  goalEditorGoals: [],
+  goalEditorEditingId: null,
+  sidebarSort: localStorage.getItem('tf_sidebar_sort') || 'recent',
   chat: {
     open: false,
     messages: [],
+    historyReady: false,
     streaming: false,
     currentAssistantText: '',
     currentAssistantEl: null,
     toolCards: new Map(),
+    turnTools: [],
   },
 }
 
@@ -1120,6 +1482,11 @@ async function api(path, opts = {}) {
     throw new Error(msg)
   }
   return r.json()
+}
+
+function localDateStr() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 /* ================================================================
@@ -1146,8 +1513,7 @@ function md(src) {
    INIT
    ================================================================ */
 async function init() {
-  loadChatMessages()
-  renderChat()
+  await loadChatHistory()
   updateChatContext()
   setupKeys()
   setupSearch()
@@ -1164,19 +1530,27 @@ async function loadProjects() {
 }
 
 async function loadBadges() {
-  const [od, bl, ac] = await Promise.all([
+  const [od, bl, ac, td] = await Promise.all([
     api('/api/overdue'),
     api('/api/backlog'),
     api('/api/active'),
+    api('/api/today'),
   ])
   document.getElementById('badge-overdue').textContent = od.tasks.length || '0'
   document.getElementById('badge-backlog').textContent = bl.tasks.length || '0'
   document.getElementById('badge-active').textContent = ac.projects.length || '0'
+  document.getElementById('badge-today').textContent = (td.focus || []).filter(t => t.status === 'open').length || '0'
 }
 
 /* ================================================================
    SIDEBAR
    ================================================================ */
+function setSidebarSort(mode) {
+  S.sidebarSort = mode
+  localStorage.setItem('tf_sidebar_sort', mode)
+  renderSidebar()
+}
+
 function renderSidebar() {
   const el = document.getElementById('sidebar-projects')
   const phaseOrder = ['in_progress', 'planning', 'idea', 'done', 'reference']
@@ -1192,12 +1566,16 @@ function renderSidebar() {
   const archived = S.projects.filter(p => p.archived)
 
   let html = ''
-  for (const ph of phaseOrder) {
-    const projs = active.filter(p => p.phase === ph)
-    if (!projs.length) continue
-    html += `<div class="sb-group-label">${phaseLabels[ph] || ph}</div>`
+  if (S.sidebarSort === 'recent') {
+    html += `<div class="sb-group-label">Recent <span class="sb-group-toggle" onclick="event.stopPropagation();setSidebarSort('grouped')" title="Group by phase">≡</span></div>`
     html += '<div class="sb-projects">'
-    for (const p of projs) {
+    const recent = [...active].sort((a, b) => {
+      if (a.last_activity == null && b.last_activity == null) return 0
+      if (a.last_activity == null) return 1
+      if (b.last_activity == null) return -1
+      return b.last_activity.localeCompare(a.last_activity)
+    })
+    for (const p of recent) {
       html += `<div class="sb-proj ${p.id === S.projectId ? 'active' : ''}" onclick="goProject(${p.id})">
         <span class="phase-dot ph-${p.phase}"></span>
         <span class="p-icon">${p.icon || ''}</span>
@@ -1206,6 +1584,28 @@ function renderSidebar() {
       </div>`
     }
     html += '</div>'
+  } else {
+    let first = true
+    for (const ph of phaseOrder) {
+      const projs = active.filter(p => p.phase === ph)
+      if (!projs.length) continue
+      if (first) {
+        html += `<div class="sb-group-label">${phaseLabels[ph] || ph} <span class="sb-group-toggle" onclick="event.stopPropagation();setSidebarSort('recent')" title="Sort by recent">↕</span></div>`
+        first = false
+      } else {
+        html += `<div class="sb-group-label">${phaseLabels[ph] || ph}</div>`
+      }
+      html += '<div class="sb-projects">'
+      for (const p of projs) {
+        html += `<div class="sb-proj ${p.id === S.projectId ? 'active' : ''}" onclick="goProject(${p.id})">
+          <span class="phase-dot ph-${p.phase}"></span>
+          <span class="p-icon">${p.icon || ''}</span>
+          <span class="p-name">${esc(p.name)}</span>
+          <span class="p-count">${p.open_count || 0}</span>
+        </div>`
+      }
+      html += '</div>'
+    }
   }
 
   if (archived.length) {
@@ -1308,6 +1708,122 @@ async function goOverdue() {
   const data = await api('/api/overdue')
   document.getElementById('h-meta').textContent = `${data.tasks.length} tasks`
   renderFlatTasks(data.tasks, c)
+  updateChatContext()
+}
+
+function todayDateLabel(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`)
+  return Number.isNaN(d.getTime())
+    ? dateStr
+    : d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+}
+
+function goalTimeframeLabel(timeframe) {
+  return timeframe ? `${timeframe.charAt(0).toUpperCase()}${timeframe.slice(1)}` : ''
+}
+
+function todayLocation(item) {
+  return `${item.project_name || 'No Project'} · ${item.section_name || 'Ungrouped'}`
+}
+
+function renderTodayGoal(goal) {
+  return `<div class="today-goal-line">
+    <span class="today-goal-bullet">&middot;</span>
+    <span>${esc(goal.text)}</span>
+    <span class="goal-timeframe">${esc(goalTimeframeLabel(goal.timeframe))}</span>
+  </div>`
+}
+
+function renderTodayFocusItem(item) {
+  const done = item.status === 'completed'
+  const due = item.due_date ? `<span class="due ${dueClass(item.due_date, item.status)}">${item.due_date}</span>` : ''
+  return `<div class="today-item ${done ? 'completed' : ''}">
+    <div class="t-check ${done ? 'done' : ''}" onclick="event.stopPropagation();toggleTask(${item.task_id},'${item.status}')"></div>
+    <div class="today-item-body" onclick="selTask(${item.task_id})">
+      <div class="today-item-name">${esc(item.task_name)}</div>
+      <div class="today-item-meta">
+        <span>${esc(todayLocation(item))}</span>
+        ${due}
+      </div>
+    </div>
+  </div>`
+}
+
+function renderTodayCarriedItem(item) {
+  return `<div class="today-item">
+    <div class="today-item-body" onclick="selTask(${item.task_id})">
+      <div class="today-item-name">${esc(item.task_name)}</div>
+      <div class="today-item-meta">
+        <span>${esc(todayLocation(item))}</span>
+        <span>${esc(item.focus_date)}</span>
+      </div>
+    </div>
+    <button class="today-action today-carried-add" onclick="event.stopPropagation();addCarriedToToday(${item.task_id})">+</button>
+  </div>`
+}
+
+function renderToday(data, dateStr, container) {
+  S.todayData = data
+  S.todayDate = dateStr
+  const goals = Array.isArray(data.goals) ? data.goals : []
+  const focus = Array.isArray(data.focus) ? data.focus : []
+  const carried = Array.isArray(data.carried) ? data.carried : []
+
+  let html = '<div class="today-layout">'
+
+  html += `<section class="today-section today-goals">
+    <div class="today-section-head">
+      <div class="today-title-group">
+        <h3>Goals</h3>
+      </div>
+      <div class="spacer"></div>
+      <button class="today-action" onclick="openGoalEditor()">Edit</button>
+    </div>
+    ${goals.length
+      ? `<div class="today-goals-list">${goals.map(renderTodayGoal).join('')}</div>`
+      : '<div class="today-goals-empty">No active goals yet. Add one to guide daily planning.</div>'}
+  </section>`
+
+  html += `<section class="today-section today-focus">
+    <div class="today-section-head">
+      <div class="today-title-group">
+        <h3>Today</h3>
+        <div class="today-section-sub">${esc(todayDateLabel(dateStr))}</div>
+      </div>
+      <div class="spacer"></div>
+      <button class="today-action" onclick="openFocusPicker()">+</button>
+    </div>
+    ${focus.length
+      ? `<div class="today-list">${focus.map(renderTodayFocusItem).join('')}</div>`
+      : '<div class="today-empty">Plan your day — ask Claude what to focus on, or add tasks with +.</div>'}
+  </section>`
+
+  if (carried.length) {
+    html += `<section class="today-section today-carried">
+      <div class="today-section-head">
+        <div class="today-title-group">
+          <h3>Carried Over</h3>
+        </div>
+      </div>
+      <div class="today-list">${carried.map(renderTodayCarriedItem).join('')}</div>
+    </section>`
+  }
+
+  html += '</div>'
+  container.innerHTML = html
+}
+
+async function goToday() {
+  setView('today')
+  document.getElementById('toolbar').style.display = 'none'
+  const now = new Date()
+  const dateStr = localDateStr()
+  setHeader('\u25C9', 'Today', now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }))
+  const c = document.getElementById('content')
+  c.innerHTML = '<div class="loading">Loading...</div>'
+
+  const data = await api(`/api/today?date=${dateStr}`)
+  renderToday(data, dateStr, c)
   updateChatContext()
 }
 
@@ -1610,6 +2126,7 @@ async function deleteTask(id) {
 
 async function refreshCurrentView({ reloadSidebar = true } = {}) {
   if (S.view === 'project' && S.projectId) await refreshProject({ reloadSidebar })
+  else if (S.view === 'today') await goToday()
   else if (S.view === 'active') await goActive()
   else if (S.view === 'backlog') await goBacklog()
   else if (S.view === 'overdue') await goOverdue()
@@ -1736,6 +2253,197 @@ async function submitTask() {
   toast('Task created')
 }
 
+async function refreshTodaySurface() {
+  const work = [loadBadges()]
+  if (S.view === 'today') work.push(goToday())
+  await Promise.all(work)
+}
+
+function goalTimeframeOptions(selected) {
+  return ['day', 'week', 'month', 'quarter']
+    .map(tf => `<option value="${tf}" ${tf === selected ? 'selected' : ''}>${esc(goalTimeframeLabel(tf))}</option>`)
+    .join('')
+}
+
+function renderGoalRow(goal) {
+  const active = !!goal.active
+  const editing = S.goalEditorEditingId === goal.id
+  if (editing) {
+    return `<div class="goal-row">
+      <div class="goal-edit-fields">
+        <input id="goal-edit-text-${goal.id}" value="${esc(goal.text)}" />
+        <select id="goal-edit-timeframe-${goal.id}">${goalTimeframeOptions(goal.timeframe)}</select>
+      </div>
+      <div class="goal-actions">
+        <button class="goal-btn" onclick="saveGoalEdit(${goal.id})">Save</button>
+        <button class="goal-btn" onclick="cancelGoalEdit()">Cancel</button>
+      </div>
+    </div>`
+  }
+  return `<div class="goal-row ${active ? '' : 'completed'}">
+    <div class="goal-main">
+      <div class="goal-title">${esc(goal.text)}</div>
+      <div class="goal-meta">
+        <span class="goal-timeframe">${esc(goalTimeframeLabel(goal.timeframe))}</span>
+        ${active ? '' : '<span class="goal-status">Completed</span>'}
+      </div>
+    </div>
+    <div class="goal-actions">
+      ${active ? `<button class="goal-btn" onclick="editGoal(${goal.id})">Edit</button>` : ''}
+      ${active ? `<button class="goal-btn" onclick="completeGoal(${goal.id})">Complete</button>` : `<button class="goal-btn" onclick="reopenGoal(${goal.id})">Reopen</button>`}
+      <button class="goal-btn danger" onclick="deleteGoal(${goal.id})">Delete</button>
+    </div>
+  </div>`
+}
+
+function renderGoalList() {
+  const list = document.getElementById('goal-list')
+  const goals = Array.isArray(S.goalEditorGoals) ? S.goalEditorGoals : []
+  if (!goals.length) {
+    list.innerHTML = '<div class="goal-empty">No goals yet.</div>'
+    return
+  }
+  list.innerHTML = goals.map(renderGoalRow).join('')
+}
+
+async function reloadGoalEditor() {
+  const data = await api('/api/goals?active_only=false')
+  S.goalEditorGoals = data.goals || []
+  renderGoalList()
+}
+
+async function openGoalEditor() {
+  S.goalEditorEditingId = null
+  document.getElementById('goal-list').innerHTML = '<div class="loading">Loading...</div>'
+  show('modal-goals')
+  await reloadGoalEditor()
+  setTimeout(() => document.getElementById('goal-text').focus(), 80)
+}
+
+function editGoal(id) {
+  S.goalEditorEditingId = id
+  renderGoalList()
+  setTimeout(() => {
+    const input = document.getElementById(`goal-edit-text-${id}`)
+    if (input) input.focus()
+  }, 0)
+}
+
+function cancelGoalEdit() {
+  S.goalEditorEditingId = null
+  renderGoalList()
+}
+
+async function saveGoalEdit(id) {
+  const text = document.getElementById(`goal-edit-text-${id}`).value.trim()
+  const timeframe = document.getElementById(`goal-edit-timeframe-${id}`).value
+  if (!text) return
+  await api(`/api/goals/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ text, timeframe }),
+  })
+  S.goalEditorEditingId = null
+  await Promise.all([reloadGoalEditor(), refreshTodaySurface()])
+  toast('Goal updated')
+}
+
+async function addGoal() {
+  const textEl = document.getElementById('goal-text')
+  const timeframeEl = document.getElementById('goal-timeframe')
+  const text = textEl.value.trim()
+  if (!text) return
+  await api('/api/goals', {
+    method: 'POST',
+    body: JSON.stringify({ text, timeframe: timeframeEl.value }),
+  })
+  textEl.value = ''
+  timeframeEl.value = 'week'
+  await Promise.all([reloadGoalEditor(), refreshTodaySurface()])
+  toast('Goal added')
+}
+
+async function completeGoal(id) {
+  await api(`/api/goals/${id}/complete`, { method: 'POST' })
+  if (S.goalEditorEditingId === id) S.goalEditorEditingId = null
+  await Promise.all([reloadGoalEditor(), refreshTodaySurface()])
+  toast('Goal completed')
+}
+
+async function reopenGoal(id) {
+  await api(`/api/goals/${id}/reopen`, { method: 'POST' })
+  await Promise.all([reloadGoalEditor(), refreshTodaySurface()])
+  toast('Goal reopened')
+}
+
+async function deleteGoal(id) {
+  if (!confirm('Delete this goal?')) return
+  await api(`/api/goals/${id}`, { method: 'DELETE' })
+  if (S.goalEditorEditingId === id) S.goalEditorEditingId = null
+  await Promise.all([reloadGoalEditor(), refreshTodaySurface()])
+  toast('Goal deleted')
+}
+
+function renderFocusPickerResult(task) {
+  const done = task.status === 'completed'
+  return `<button class="fp-result ${done ? 'completed' : ''}" onclick="focusPickerSelect(${task.id})">
+    <span class="fp-name">${esc(task.name)}</span>
+    <span class="fp-meta">${esc(todayLocation(task))}${done ? ' · completed' : ''}</span>
+  </button>`
+}
+
+function openFocusPicker() {
+  clearTimeout(S.focusPickerTimer)
+  document.getElementById('fp-search').value = ''
+  document.getElementById('fp-results').innerHTML = '<div class="fp-empty">Search tasks to add to today.</div>'
+  show('modal-focus-picker')
+  setTimeout(() => document.getElementById('fp-search').focus(), 80)
+}
+
+function focusPickerSearch(query) {
+  clearTimeout(S.focusPickerTimer)
+  const resultsEl = document.getElementById('fp-results')
+  const q = query.trim()
+  const seq = ++S.focusPickerSeq
+  if (!q) {
+    resultsEl.innerHTML = '<div class="fp-empty">Search tasks to add to today.</div>'
+    return
+  }
+  resultsEl.innerHTML = '<div class="loading">Searching...</div>'
+  S.focusPickerTimer = setTimeout(async () => {
+    try {
+      const data = await api(`/api/search?q=${encodeURIComponent(q)}&limit=20`)
+      if (seq !== S.focusPickerSeq) return
+      const focusedIds = new Set((S.todayData?.focus || []).map(item => item.task_id))
+      const results = (data.results || []).filter(task => !focusedIds.has(task.id))
+      resultsEl.innerHTML = results.length
+        ? results.map(renderFocusPickerResult).join('')
+        : '<div class="fp-empty">No matching tasks.</div>'
+    } catch (err) {
+      if (seq !== S.focusPickerSeq) return
+      resultsEl.innerHTML = `<div class="fp-empty">${esc(err.message || 'Search failed')}</div>`
+    }
+  }, 180)
+}
+
+async function focusPickerSelect(taskId) {
+  await api('/api/today/focus', {
+    method: 'POST',
+    body: JSON.stringify({ task_id: taskId, date: S.todayDate || localDateStr() }),
+  })
+  hide('modal-focus-picker')
+  await refreshTodaySurface()
+  toast('Added to Today')
+}
+
+async function addCarriedToToday(taskId) {
+  await api('/api/today/focus', {
+    method: 'POST',
+    body: JSON.stringify({ task_id: taskId, date: S.todayDate || localDateStr() }),
+  })
+  await refreshTodaySurface()
+  toast('Added to Today')
+}
+
 /* ================================================================
    SEARCH
    ================================================================ */
@@ -1776,21 +2484,65 @@ async function runSearch(q, { preserveInput = false } = {}) {
 /* ================================================================
    CHAT
    ================================================================ */
+function normalizeChatMessages(messages) {
+  return Array.isArray(messages)
+    ? messages.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string').slice(-50)
+    : []
+}
+
 function loadChatMessages() {
   try {
     const raw = localStorage.getItem(CHAT_STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : []
-    S.chat.messages = Array.isArray(parsed)
-      ? parsed.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string').slice(-50)
-      : []
+    S.chat.messages = normalizeChatMessages(parsed)
   } catch (_) {
     S.chat.messages = []
   }
 }
 
+async function loadChatHistory() {
+  S.chat.historyReady = false
+  try {
+    const res = await fetch('/api/chat/history')
+    if (!res.ok) throw new Error(res.status)
+    const data = await res.json()
+    S.chat.messages = normalizeChatMessages(data.messages)
+
+    if (S.chat.messages.length === 0) {
+      loadChatMessages()
+      if (S.chat.messages.length > 0) {
+        const migRes = await fetch('/api/chat/history/migrate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: S.chat.messages }),
+        })
+        if (migRes.ok) {
+          const retry = await fetch('/api/chat/history')
+          if (retry.ok) {
+            const retryData = await retry.json()
+            S.chat.messages = normalizeChatMessages(retryData.messages)
+          }
+        }
+      }
+    }
+  } catch (_) {
+    loadChatMessages()
+  }
+
+  saveChatMessages()
+  S.chat.historyReady = true
+  renderChat()
+  setChatStatus('Ready')
+}
+
 function saveChatMessages() {
   S.chat.messages = S.chat.messages.slice(-50)
-  localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(S.chat.messages))
+  try {
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(S.chat.messages))
+  } catch (e) {
+    S.chat.messages = S.chat.messages.slice(-10)
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(S.chat.messages))
+  }
 }
 
 function renderChat() {
@@ -1887,6 +2639,24 @@ function formatToolPayload(value) {
   return text
 }
 
+function _buildToolSummary() {
+  let summary = ''
+  for (const t of S.chat.turnTools) {
+    const inputStr = t.input ? formatToolPayload(t.input).slice(0, 150) : ''
+    let outcome
+    if (t.error) {
+      outcome = 'error: ' + formatToolPayload(t.error).slice(0, 150)
+    } else if (t.result == null) {
+      outcome = '(no output)'
+    } else {
+      outcome = formatToolPayload(t.result).slice(0, 200)
+    }
+    const inputPart = inputStr ? `(${inputStr}) ` : ''
+    summary += `\n[Tool: ${t.name} ${inputPart}→ ${outcome}]`
+  }
+  return summary
+}
+
 function scrollChatToBottom() {
   const el = document.getElementById('chat-messages')
   requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
@@ -1904,11 +2674,30 @@ function setChatStreaming(active) {
   setChatStatus(active ? 'Streaming…' : 'Ready')
 }
 
+function resetChatTurnState() {
+  S.chat.currentAssistantText = ''
+  S.chat.currentAssistantEl = null
+  S.chat.toolCards = new Map()
+  S.chat.turnTools = []
+}
+
+function rollbackOptimisticChat(statusText) {
+  if (S.chat.messages.length && S.chat.messages[S.chat.messages.length - 1].role === 'user') {
+    S.chat.messages.pop()
+  }
+  saveChatMessages()
+  renderChat()
+  resetChatTurnState()
+  setChatStreaming(false)
+  setChatStatus(statusText)
+}
+
 function chatContextLabel() {
   if (S.view === 'project') {
     if (S.project?.name) return `Viewing: ${S.project.name}`
     if (S.projectId) return `Viewing: Project #${S.projectId}`
   }
+  if (S.view === 'today') return 'Viewing: Today'
   if (S.view === 'search') return S.lastSearchQuery ? `Viewing: Search for "${S.lastSearchQuery}"` : 'Viewing: Search'
   if (S.view === 'backlog') return 'Viewing: Backlog'
   if (S.view === 'overdue') return 'Viewing: Overdue'
@@ -2018,15 +2807,19 @@ function updateGridColumns() {
   });
 })();
 
-function newConversation() {
-  if (S.chat.streaming) return
-  S.chat.messages = []
-  S.chat.currentAssistantText = ''
-  S.chat.currentAssistantEl = null
-  S.chat.toolCards = new Map()
-  saveChatMessages()
-  renderChat()
-  setChatStatus('Ready')
+async function newConversation() {
+  if (!S.chat.historyReady || S.chat.streaming) return
+  try {
+    const res = await fetch('/api/chat/history/reset', { method: 'POST' })
+    if (!res.ok) throw new Error(res.status)
+    S.chat.messages = []
+    resetChatTurnState()
+    saveChatMessages()
+    renderChat()
+    setChatStatus('Ready')
+  } catch (_) {
+    setChatStatus('Could not reset; try again')
+  }
 }
 
 function setupChatInput() {
@@ -2044,13 +2837,13 @@ function buildChatPayload() {
   if (S.view === 'project' && S.projectId) context.project_id = S.projectId
   if (S.view === 'search' && S.lastSearchQuery) context.search_query = S.lastSearchQuery
   return {
-    messages: S.chat.messages,
+    message: S.chat.messages[S.chat.messages.length - 1]?.content || '',
     context,
   }
 }
 
 async function sendChat() {
-  if (S.chat.streaming) return
+  if (!S.chat.historyReady || S.chat.streaming) return
   const input = document.getElementById('chat-input')
   const text = input.value.trim()
   if (!text) return
@@ -2058,9 +2851,7 @@ async function sendChat() {
   toggleChat(true)
   appendChatMessage('user', text, { persist: true })
   input.value = ''
-  S.chat.currentAssistantText = ''
-  S.chat.currentAssistantEl = null
-  S.chat.toolCards = new Map()
+  resetChatTurnState()
   setChatStreaming(true)
 
   try {
@@ -2106,9 +2897,7 @@ async function sendChat() {
 
     if (!finished) finishChatStream(S.chat.currentAssistantText)
   } catch (err) {
-    appendChatMessage('assistant', `Chat error: ${err.message || err}`, { persist: false })
-    setChatStreaming(false)
-    setChatStatus('Error')
+    rollbackOptimisticChat(err.message || 'Error')
   }
 }
 
@@ -2125,11 +2914,17 @@ async function handleChatEvent(event) {
 
   if (event.type === 'tool_call_start') {
     appendToolCard(event.tool_call_id, event.tool_name, event.tool_input)
+    S.chat.turnTools.push({ id: event.tool_call_id, name: event.tool_name, input: event.tool_input, result: null, error: null })
     return false
   }
 
   if (event.type === 'tool_call_complete') {
     completeToolCard(event.tool_call_id, event.tool_name, event.result, event.error)
+    const entry = S.chat.turnTools.find(t => t.id === event.tool_call_id)
+    if (entry) {
+      entry.result = event.result
+      entry.error = event.error
+    }
     return false
   }
 
@@ -2144,9 +2939,10 @@ async function handleChatEvent(event) {
   }
 
   if (event.type === 'error') {
-    appendChatMessage('assistant', `Chat error: ${event.error || 'Unknown error'}`, { persist: false })
-    setChatStreaming(false)
-    setChatStatus('Error')
+    const errorMsg = event.error || 'Unknown error'
+    rollbackOptimisticChat(
+      errorMsg === 'save_failed' ? 'Could not save message; try again' : errorMsg
+    )
     return true
   }
 
@@ -2154,16 +2950,26 @@ async function handleChatEvent(event) {
 }
 
 function finishChatStream(assistantText) {
+  const toolSummary = _buildToolSummary()
+  let fullContent = (assistantText || '') + toolSummary
+  if (!fullContent.trim()) fullContent = '(empty response)'
+
   if (assistantText) {
     updateStreamingAssistant(assistantText)
-    S.chat.messages.push({ role: 'assistant', content: assistantText })
-    saveChatMessages()
+  } else if (fullContent === '(empty response)') {
+    if (S.chat.currentAssistantEl) {
+      S.chat.currentAssistantEl.innerHTML = `<div class="md">${md(fullContent)}</div>`
+    } else {
+      appendChatMessage('assistant', fullContent, { persist: false })
+    }
   } else if (S.chat.currentAssistantEl) {
     S.chat.currentAssistantEl.parentElement.remove()
+    S.chat.currentAssistantEl = null
   }
-  S.chat.currentAssistantText = ''
-  S.chat.currentAssistantEl = null
-  S.chat.toolCards = new Map()
+
+  S.chat.messages.push({ role: 'assistant', content: fullContent })
+  saveChatMessages()
+  resetChatTurnState()
   setChatStreaming(false)
 }
 
@@ -2247,6 +3053,8 @@ function setupKeys() {
       if (document.getElementById('modal-project').style.display === 'flex') hide('modal-project')
       else if (document.getElementById('modal-task').style.display === 'flex') hide('modal-task')
       else if (document.getElementById('modal-plan').style.display === 'flex') hide('modal-plan')
+      else if (document.getElementById('modal-focus-picker').style.display === 'flex') hide('modal-focus-picker')
+      else if (document.getElementById('modal-goals').style.display === 'flex') hide('modal-goals')
       else if (document.getElementById('task-detail-modal').style.display === 'flex') closeDetail()
       document.getElementById('search-input').blur()
     }

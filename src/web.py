@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import sqlite3
 import subprocess
@@ -112,9 +113,9 @@ VIEW_CONTEXT_TOKEN_BUDGET = 3000
 PROMPT_TOKEN_BUDGET = 6000
 SSE_HEARTBEAT_SECONDS = 15.0
 MEMORY_FILE_PATH = Path(__file__).resolve().parent.parent / "data" / "agent_memory.md"
-MEMORY_TOKEN_BUDGET = 500
-MEMORY_MAX_BYTES = 8192
-MEMORY_MAX_LINES = 80
+MEMORY_TOKEN_BUDGET = 700
+MEMORY_MAX_BYTES = 12288
+MEMORY_MAX_LINES = 120
 
 _workspace_summary_cache = {
     "text": "",
@@ -176,19 +177,40 @@ class SectionUpdate(BaseModel):
     position: Optional[int] = None
 
 
+class GoalCreate(BaseModel):
+    text: str
+    timeframe: str = "week"
+
+
+class GoalUpdate(BaseModel):
+    text: Optional[str] = None
+    timeframe: Optional[str] = None
+
+
+class FocusCreate(BaseModel):
+    task_id: int
+    date: Optional[str] = None
+    position: Optional[int] = None
+
+
+class FocusMove(BaseModel):
+    position: int
+    date: Optional[str] = None
+
+
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
 
 
 class ChatContext(BaseModel):
-    view: Literal["active", "project", "backlog", "overdue", "search"] = "active"
+    view: Literal["active", "project", "backlog", "overdue", "search", "today"] = "active"
     project_id: Optional[int] = None
     search_query: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
-    messages: list[ChatMessage]
+    message: str
     context: ChatContext = Field(default_factory=ChatContext)
 
 
@@ -198,6 +220,117 @@ class ChatRequest(BaseModel):
 
 def _conn():
     return db.get_conn()
+
+
+COMPACT_TOKEN_THRESHOLD = 60_000
+COMPACT_AFTER_MESSAGES = 30
+KEEP_RECENT_MESSAGES = 6
+SUMMARY_PROMPT = (
+    "Summarize this conversation in 2-3 concise paragraphs. Focus on: what was being "
+    "worked on, open threads, key decisions or numbers. Write in third person. "
+    "Preserve specific amounts, category names, and action items."
+)
+
+
+def estimate_tokens(messages: list[dict[str, str]]) -> int:
+    """Estimate token count using chars/4 heuristic."""
+    return sum(math.ceil(len(str(message.get("content", ""))) / 4) for message in messages)
+
+
+def needs_compaction(messages: list[dict[str, str]]) -> bool:
+    """Check if history exceeds compaction thresholds."""
+    min_for_compaction = KEEP_RECENT_MESSAGES + 2 + 1
+    if len(messages) < min_for_compaction:
+        return False
+    return estimate_tokens(messages) > COMPACT_TOKEN_THRESHOLD or len(messages) > COMPACT_AFTER_MESSAGES
+
+
+def _build_transcript(messages: list[dict[str, str]]) -> str:
+    """Build a readable transcript from messages, truncating long content."""
+    lines = []
+    for message in messages:
+        role = str(message.get("role", "unknown")).upper()
+        content = str(message.get("content", ""))
+        if len(content) > 2000:
+            content = content[:2000] + "..."
+        lines.append(f"{role}: {content}")
+    return "\n\n".join(lines)
+
+
+def _format_tool_payload(value: Any) -> str:
+    if value is None:
+        return "{}"
+    text = value if isinstance(value, str) else json.dumps(value, default=str, indent=2)
+    if len(text) > 900:
+        text = f"{text[:900]}…"
+    return text
+
+
+def _build_tool_summary(tool_calls: list[dict[str, Any]]) -> str:
+    summary = ""
+    for tool_call in tool_calls:
+        input_value = tool_call.get("input")
+        input_str = (
+            _format_tool_payload(input_value).strip()[:150]
+            if input_value is not None
+            else ""
+        )
+        if tool_call.get("error"):
+            outcome = "error: " + _format_tool_payload(tool_call.get("error")).strip()[:150]
+        elif tool_call.get("result") is None:
+            outcome = "(no output)"
+        else:
+            outcome = _format_tool_payload(tool_call.get("result")).strip()[:200]
+        input_part = f"({input_str}) " if input_str else ""
+        summary += f"\n[Tool: {tool_call.get('name', '')} {input_part}→ {outcome}]"
+    return summary
+
+
+async def _generate_summary(messages: list[dict[str, str]]) -> str:
+    if not messages:
+        return ""
+
+    transcript = _build_transcript(messages)
+    if not transcript.strip():
+        return ""
+
+    from anthropic import AsyncAnthropic
+    import httpx
+
+    config = _anthropic_auth_config()
+    client_kwargs: dict[str, Any] = {
+        "timeout": httpx.Timeout(timeout=60.0, connect=5.0),
+    }
+    mode = str(config.get("auth_mode", "api")).strip().lower()
+    if mode == "oauth":
+        client = AsyncAnthropic(
+            api_key="",
+            auth_token=str(config.get("auth_token", "")),
+            default_headers={"anthropic-beta": "oauth-2025-04-20"},
+            **client_kwargs,
+        )
+    else:
+        client = AsyncAnthropic(
+            api_key=str(config.get("api_key", "")),
+            auth_token="",
+            **client_kwargs,
+        )
+
+    try:
+        response = await client.messages.create(
+            model=str(config.get("model", ANTHROPIC_MODEL)),
+            max_tokens=1024,
+            messages=[{"role": "user", "content": f"{transcript}\n\n{SUMMARY_PROMPT}"}],
+        )
+    finally:
+        await client.close()
+
+    summary_parts = [
+        getattr(block, "text", "")
+        for block in response.content
+        if getattr(block, "type", "") == "text"
+    ]
+    return "".join(summary_parts).strip()
 
 
 def _tool_error(code: str, message: str):
@@ -231,6 +364,23 @@ def _trim_for_token_budget(text: str, max_tokens: int) -> str:
     cutoff = max_chars - 1
     trimmed = text[:cutoff].rsplit(" ", 1)[0]
     return f"{trimmed}…"
+
+
+_TRIM_MARKER = "\n\n[... trimmed ...]\n\n"
+
+
+def _trim_memory_content(content: str, max_chars: int) -> str:
+    """Trim memory content preserving head (structure) and tail (recent)."""
+    if len(content) <= max_chars:
+        return content
+    usable = max_chars - len(_TRIM_MARKER)
+    if usable <= 0:
+        return content[:max_chars]
+    head_budget = int(usable * 0.7)
+    tail_budget = usable - head_budget
+    head = content[:head_budget].rsplit("\n", 1)[0]
+    tail = content[-tail_budget:].split("\n", 1)[-1] if tail_budget > 0 else ""
+    return head + _TRIM_MARKER + tail
 
 
 def _truncate_text(text: str, max_chars: int) -> str:
@@ -301,6 +451,8 @@ def _build_workspace_summary() -> str:
         projects = db.list_projects(conn, include_archived=False)
         backlog_tasks = db.backlog(conn)
         overdue_tasks = db.overdue(conn)
+        goals = db.list_goals(conn)
+        today_focus = db.get_today_focus(conn)
         weekly_activity = conn.execute(
             """
             SELECT
@@ -351,6 +503,17 @@ def _build_workspace_summary() -> str:
     completed_7d = int(weekly_activity["completed_7d"] or 0) if weekly_activity else 0
     created_7d = int(weekly_activity["created_7d"] or 0) if weekly_activity else 0
     lines.append(f"- This week: {completed_7d} tasks completed, {created_7d} created")
+    goal_parts = []
+    for timeframe in db.ALLOWED_TIMEFRAMES:
+        count = sum(1 for goal in goals if goal.get("timeframe") == timeframe)
+        if count:
+            goal_parts.append(f"{count} {timeframe}")
+    goal_details = f" ({', '.join(goal_parts)})" if goal_parts else ""
+    lines.append(f"- Goals: {len(goals)} active{goal_details}")
+    today_open = sum(1 for item in today_focus if item.get("status") == "open")
+    lines.append(
+        f"- Today: {len(today_focus)} focused ({today_open} open, {len(today_focus) - today_open} completed)"
+    )
     from . import repos as repos_mod
     rnames = repos_mod.repo_names()
     if rnames:
@@ -385,7 +548,7 @@ def _build_memory_context() -> str:
     # Escape closing tag to prevent breakout
     content = content.replace("</memory>", "&lt;/memory&gt;")
     # Trim content only (preserves framing tags)
-    content = _trim_for_token_budget(content, _MEMORY_CONTENT_BUDGET)
+    content = _trim_memory_content(content, _estimate_char_budget(_MEMORY_CONTENT_BUDGET))
     return f"{_MEMORY_PREAMBLE}\n<memory>\n{content}\n</memory>"
 
 
@@ -462,6 +625,34 @@ def _build_view_context(context: ChatContext) -> str:
                 lines.append("OVERDUE TASKS:\n- None")
             return _trim_for_token_budget("\n".join(lines), VIEW_CONTEXT_TOKEN_BUDGET)
 
+        if context.view == "today":
+            today = db._today_date()
+            focus = db.get_today_focus(conn, today)
+            carried = db.get_carried_forward(conn, today)
+            goals = db.list_goals(conn)
+            lines = [f"CURRENT VIEW: Today ({today})"]
+            if goals:
+                lines.append("GOALS:")
+                for goal in goals:
+                    lines.append(f"- [{goal['timeframe']}] {goal['text']}")
+            else:
+                lines.append("GOALS:\n- None")
+            if focus:
+                lines.append(f"FOCUS ({len(focus)} items):")
+                for item in focus:
+                    location = f"{item['project_name']} · {item['section_name'] or 'Ungrouped'}"
+                    lines.append(f"- [{item['task_id']}] {item['task_name']} ({location}) — {item['status']}")
+            else:
+                lines.append("FOCUS: (empty — consider asking for daily planning help)")
+            if carried:
+                lines.append(f"CARRIED OVER ({len(carried)} items):")
+                for item in carried:
+                    location = item["project_name"] or "Unknown project"
+                    lines.append(
+                        f"- [{item['task_id']}] {item['task_name']} ({location}) — from {item['focus_date']}"
+                    )
+            return _trim_for_token_budget("\n".join(lines), VIEW_CONTEXT_TOKEN_BUDGET)
+
         if context.view == "search":
             query = (context.search_query or "").strip()
             lines = [f"CURRENT VIEW: Search ({query or 'no query'})"]
@@ -497,12 +688,52 @@ def build_taskflow_prompt(context: ChatContext) -> str:
     deferred_tools = _configured_server_names()
     memory_section = f"\n\n{memory_block}" if memory_block else ""
     prompt = f"""
-You are a project collaborator in Taskflow, Henry's personal project management system.
+You are a project collaborator in Taskflow, the user's personal project management system.
 
 YOUR ROLE:
 - Help think through project plans, not just manage tasks.
 - Act when you can via tools instead of stopping at suggestions.
 - Use the workspace context below to stay oriented across all projects.
+
+TASKFLOW PHILOSOPHY:
+Taskflow is "the repo for non-code life" — it gives non-code work the same forward motion
+that code projects get naturally: everything in one place, AI collaborator, clear "what's next."
+
+Structure follows three layers:
+- Project plan = the orientation ("what are we doing and why") — freeform markdown
+- Sections = independent workstreams, each with their own plan
+- Tasks = atomic action items extracted from plans
+
+Key principles:
+- Plans before tasks — think first, structure second, execute third. Don't jump to creating tasks.
+- Goals set direction — concrete targets (not vague aspirations) that drive daily focus choices.
+- The daily loop: Goals → "what's highest leverage today?" → Today view → execute → review.
+- Collaborator, not task bot — read the plan, understand context, suggest and act, don't just CRUD.
+- Connected — you can reach into Roam, Drive, Sheets, Gmail, etc. to do real work, not just manage tasks.
+
+MEMORY MANAGEMENT:
+Use tf_memory_read / tf_memory_update to maintain persistent context across sessions.
+
+How to use:
+- Read first, then update — never blind-overwrite
+- Organize by topic (sections with ## headers), not chronologically
+- Keep it concise — this is injected into every session's context
+
+What to save:
+- User preferences (workflow, communication style, tool choices)
+- Project conventions and architectural decisions
+- Cross-project references and relationships
+- Recurring patterns confirmed across multiple sessions
+- Key contacts, accounts, or system details referenced often
+
+What NOT to save:
+- Current task details or in-progress work (that's in the task itself)
+- Session-specific context (what you just discussed)
+- Anything already in CLAUDE.md or the codebase
+- Speculative conclusions from a single interaction
+- Verbose notes — summarize, don't transcribe
+
+If the conversation is getting long, proactively save important context to memory before it's lost.
 
 {workspace_summary}
 {memory_section}
@@ -513,11 +744,14 @@ AVAILABLE TOOLS:
 
 Core (always loaded):
 - `tf_*` tools — manage Taskflow projects, sections, tasks, search, and workspace views.
-- `notes_search` / `notes_read` — search and read Apple Notes (Henry's phone-accessible capture tool).
+- `tf_today` / `tf_focus` / `tf_unfocus` / `tf_move_focus` — daily focus list management.
+- `tf_create_goal` / `tf_update_goal` / `tf_goal_list` / `tf_goal_complete` / `tf_goal_reopen` / `tf_goal_remove` — goal management.
+- `read_file` / `list_dir` / `run_shell` — read files, browse directories, run shell commands (git, grep, etc.).
+- `notes_search` / `notes_read` — search and read Apple Notes (the user's phone-accessible capture tool).
 - `tf_repo_list` / `tf_repo_status` — check git status, recent commits, and open TODOs across connected repositories.
 
 Deferred MCP servers (call `load_tools` with server_name first):
-- `roam-research` — Roam Research graph: daily notes, page search, block-level content. Henry's primary capture/thinking tool.
+- `roam-research` — Roam Research graph: daily notes, page search, block-level content. the user's primary capture/thinking tool.
 - `drive-mcp` — Google Drive: search, list, read documents and files. Project plans and docs live here.
 - `gsheets-mcp` — Google Sheets: read/write spreadsheet data, formulas, tracking sheets.
 - `gmail-mcp` — Gmail: search and read emails. Useful for project-related correspondence.
@@ -532,7 +766,10 @@ BEHAVIORAL GUIDELINES:
 - When the user mentions notes or ideas they captured, check Apple Notes or Roam.
 - When discussing code projects or repo work, use `tf_repo_status` to check current state before making recommendations.
 - Load deferred MCP servers proactively when the conversation clearly needs them.
-- Use `tf_memory_update` to save context that should persist across sessions: workflow preferences, project conventions, cross-system references. Read first with `tf_memory_read`. Keep concise.
+- Daily planning:
+  When the user asks what to focus on today, or the Today view is empty, read goals first, survey overdue and due-soon work, consider carry-forward items, propose 3-5 high-leverage tasks with reasons, iterate with the user, then pin the agreed tasks with `tf_focus`.
+- Prioritization heuristics:
+  Overdue work with external stakeholders beats internal deadlines, unblockers beat isolated work, goal-aligned tasks beat dormant projects, quick wins are useful early, and focus lists should stay short.
 """.strip()
     return _trim_for_token_budget(prompt, PROMPT_TOKEN_BUDGET)
 
@@ -747,6 +984,89 @@ TF_TOOL_DEFINITIONS = [
         "input_schema": _schema({}),
     },
     {
+        "name": "tf_today",
+        "description": "Return focus items, active goals, and carried-forward tasks for a date.",
+        "input_schema": _schema({"date": {"type": "string"}}),
+    },
+    {
+        "name": "tf_focus",
+        "description": "Add a task to the daily focus list.",
+        "input_schema": _schema(
+            {
+                "task_id": {"type": "integer"},
+                "date": {"type": "string"},
+                "position": {"type": "integer"},
+            },
+            ["task_id"],
+        ),
+    },
+    {
+        "name": "tf_unfocus",
+        "description": "Remove a task from the daily focus list.",
+        "input_schema": _schema(
+            {
+                "task_id": {"type": "integer"},
+                "date": {"type": "string"},
+            },
+            ["task_id"],
+        ),
+    },
+    {
+        "name": "tf_move_focus",
+        "description": "Reorder a focused task within a day.",
+        "input_schema": _schema(
+            {
+                "task_id": {"type": "integer"},
+                "position": {"type": "integer"},
+                "date": {"type": "string"},
+            },
+            ["task_id", "position"],
+        ),
+    },
+    {
+        "name": "tf_create_goal",
+        "description": "Create a new goal.",
+        "input_schema": _schema(
+            {
+                "text": {"type": "string"},
+                "timeframe": {"type": "string", "enum": list(db.ALLOWED_TIMEFRAMES)},
+            },
+            ["text"],
+        ),
+    },
+    {
+        "name": "tf_update_goal",
+        "description": "Update goal text or timeframe. Only provided fields are changed.",
+        "input_schema": _schema(
+            {
+                "goal_id": {"type": "integer"},
+                "text": {"type": "string"},
+                "timeframe": {"type": "string", "enum": list(db.ALLOWED_TIMEFRAMES)},
+            },
+            ["goal_id"],
+        ),
+    },
+    {
+        "name": "tf_goal_list",
+        "description": "List goals across all timeframes.",
+        "input_schema": _schema({"active_only": {"type": "boolean"}}),
+    },
+    {
+        "name": "tf_goal_complete",
+        "description": "Mark a goal as completed.",
+        "input_schema": _schema({"goal_id": {"type": "integer"}}, ["goal_id"]),
+    },
+    {
+        "name": "tf_goal_reopen",
+        "description": "Reopen a completed goal.",
+        "input_schema": _schema({"goal_id": {"type": "integer"}}, ["goal_id"]),
+    },
+    {
+        "name": "tf_goal_remove",
+        "description": "Delete a goal permanently.",
+        "input_schema": _schema({"goal_id": {"type": "integer"}}, ["goal_id"]),
+    },
+    {
         "name": "load_tools",
         "description": "Load deferred MCP tools for a configured server from ~/.claude.json.",
         "input_schema": _schema({"server_name": {"type": "string"}}, ["server_name"]),
@@ -778,10 +1098,39 @@ TF_TOOL_DEFINITIONS = [
     },
     {
         "name": "tf_memory_update",
-        "description": "Overwrite the agent's persistent memory file. Read first with tf_memory_read, then write back full updated content. Server enforces 8 KB / 80 line limit.",
+        "description": "Overwrite the agent's persistent memory file. Read first with tf_memory_read, then write back full updated content. Server enforces 12 KB / 120 line limit.",
         "input_schema": _schema(
             {"content": {"type": "string", "description": "Full markdown content to write to the memory file."}},
             ["content"],
+        ),
+    },
+    # --- Filesystem tools ---
+    {
+        "name": "read_file",
+        "description": "Read a file's contents. Returns numbered lines. Use offset/limit for large files.",
+        "input_schema": _schema(
+            {
+                "path": {"type": "string", "description": "Absolute or relative file path to read."},
+                "offset": {"type": "integer", "description": "1-based line number to start from (default: 1)."},
+                "limit": {"type": "integer", "description": "Max lines to return (default: 2000)."},
+            },
+            ["path"],
+        ),
+    },
+    {
+        "name": "list_dir",
+        "description": "List directory contents with file types and sizes.",
+        "input_schema": _schema(
+            {"path": {"type": "string", "description": "Directory path to list."}},
+            ["path"],
+        ),
+    },
+    {
+        "name": "run_shell",
+        "description": "Run a shell command (bash). Use for git, grep, find, etc. 30s timeout, output capped at 50 KB.",
+        "input_schema": _schema(
+            {"command": {"type": "string", "description": "Shell command to execute."}},
+            ["command"],
         ),
     },
     {
@@ -825,6 +1174,14 @@ MUTATING_TOOL_NAMES = {
     "tf_reopen_task",
     "tf_move_task",
     "tf_delete_task",
+    "tf_focus",
+    "tf_unfocus",
+    "tf_move_focus",
+    "tf_create_goal",
+    "tf_update_goal",
+    "tf_goal_complete",
+    "tf_goal_reopen",
+    "tf_goal_remove",
 }
 
 mcp_manager = McpClientManager(
@@ -1171,6 +1528,169 @@ async def tf_overdue_handler(tool_input, *, call_index=0):
         conn.close()
 
 
+async def tf_today_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        date = tool_input.get("date")
+        try:
+            if date:
+                db._validate_date(date)
+            focus = db.get_today_focus(conn, date)
+            carried = db.get_carried_forward(conn, date)
+            goals = db.list_goals(conn)
+        except ValueError as exc:
+            return _tool_error("invalid_input", str(exc))
+        return {
+            "date": date or db._today_date(),
+            "goals": goals,
+            "focus": focus,
+            "carried": carried,
+        }, None
+    finally:
+        conn.close()
+
+
+async def tf_focus_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        try:
+            inserted = db.add_focus(
+                conn,
+                tool_input.get("task_id"),
+                tool_input.get("date"),
+                tool_input.get("position"),
+            )
+        except ValueError as exc:
+            return _tool_error("invalid_input", str(exc))
+        invalidate_workspace_summary_cache()
+        return {"status": "ok", "inserted": inserted}, None
+    finally:
+        conn.close()
+
+
+async def tf_unfocus_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        try:
+            ok = db.remove_focus(conn, tool_input.get("task_id"), tool_input.get("date"))
+        except ValueError as exc:
+            return _tool_error("invalid_input", str(exc))
+        if ok:
+            invalidate_workspace_summary_cache()
+        return _ok_or_not_found(ok), None
+    finally:
+        conn.close()
+
+
+async def tf_move_focus_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        try:
+            ok = db.move_focus(
+                conn,
+                tool_input.get("task_id"),
+                tool_input.get("position"),
+                tool_input.get("date"),
+            )
+        except ValueError as exc:
+            return _tool_error("invalid_input", str(exc))
+        if ok:
+            invalidate_workspace_summary_cache()
+        return _ok_or_not_found(ok), None
+    finally:
+        conn.close()
+
+
+async def tf_create_goal_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        try:
+            goal_id = db.create_goal(
+                conn,
+                tool_input.get("text", ""),
+                tool_input.get("timeframe", "week"),
+            )
+        except ValueError as exc:
+            return _tool_error("invalid_input", str(exc))
+        invalidate_workspace_summary_cache()
+        return {"status": "ok", "goal_id": goal_id}, None
+    finally:
+        conn.close()
+
+
+async def tf_update_goal_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        goal_id = tool_input.get("goal_id")
+        fields = {
+            key: tool_input[key]
+            for key in ("text", "timeframe")
+            if tool_input.get(key) is not None
+        }
+        try:
+            ok = db.update_goal(conn, goal_id, **fields)
+        except ValueError as exc:
+            return _tool_error("invalid_input", str(exc))
+        if ok:
+            invalidate_workspace_summary_cache()
+        return _ok_or_not_found(ok), None
+    finally:
+        conn.close()
+
+
+async def tf_goal_list_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        active_only = tool_input.get("active_only", True)
+        goals = db.list_goals(conn, active_only=active_only)
+        return {"goals": goals, "count": len(goals)}, None
+    finally:
+        conn.close()
+
+
+async def tf_goal_complete_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        ok = db.complete_goal(conn, tool_input.get("goal_id"))
+        if ok:
+            invalidate_workspace_summary_cache()
+        return _ok_or_not_found(ok), None
+    finally:
+        conn.close()
+
+
+async def tf_goal_reopen_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        ok = db.reopen_goal(conn, tool_input.get("goal_id"))
+        if ok:
+            invalidate_workspace_summary_cache()
+        return _ok_or_not_found(ok), None
+    finally:
+        conn.close()
+
+
+async def tf_goal_remove_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        ok = db.delete_goal(conn, tool_input.get("goal_id"))
+        if ok:
+            invalidate_workspace_summary_cache()
+        return _ok_or_not_found(ok), None
+    finally:
+        conn.close()
+
+
 async def load_tools_handler(tool_input, *, call_index=0):
     del call_index
     server_name = str(tool_input.get("server_name", "")).strip()
@@ -1325,6 +1845,93 @@ async def tf_memory_update_handler(tool_input, *, call_index=0):
     return {"status": "ok", "path": str(MEMORY_FILE_PATH), "chars": len(content)}, None
 
 
+_READ_FILE_MAX_LINES = 2000
+_SHELL_TIMEOUT = 30
+_SHELL_MAX_OUTPUT = 50_000  # ~50 KB
+
+
+async def read_file_handler(tool_input, *, call_index=0):
+    del call_index
+    path_str = str(tool_input.get("path", "")).strip()
+    if not path_str:
+        return _tool_error("invalid_input", "path is required")
+    path = Path(path_str).expanduser().resolve()
+    if not path.is_file():
+        return _tool_error("not_found", f"File not found: {path}")
+    try:
+        offset = max(1, int(tool_input.get("offset", 1) or 1))
+    except (TypeError, ValueError):
+        offset = 1
+    try:
+        limit = min(_READ_FILE_MAX_LINES, max(1, int(tool_input.get("limit", _READ_FILE_MAX_LINES) or _READ_FILE_MAX_LINES)))
+    except (TypeError, ValueError):
+        limit = _READ_FILE_MAX_LINES
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return _tool_error("file_error", f"Could not read file: {exc}")
+    all_lines = text.splitlines()
+    total = len(all_lines)
+    selected = all_lines[offset - 1 : offset - 1 + limit]
+    numbered = "\n".join(f"{offset + i:>6}\t{line}" for i, line in enumerate(selected))
+    return {"path": str(path), "total_lines": total, "showing": f"{offset}-{offset + len(selected) - 1}", "content": numbered}, None
+
+
+async def list_dir_handler(tool_input, *, call_index=0):
+    del call_index
+    path_str = str(tool_input.get("path", "")).strip()
+    if not path_str:
+        return _tool_error("invalid_input", "path is required")
+    path = Path(path_str).expanduser().resolve()
+    if not path.is_dir():
+        return _tool_error("not_found", f"Directory not found: {path}")
+    try:
+        entries = []
+        for item in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            entry = {"name": item.name, "type": "dir" if item.is_dir() else "file"}
+            if item.is_file():
+                try:
+                    entry["size"] = item.stat().st_size
+                except OSError:
+                    entry["size"] = None
+            entries.append(entry)
+        return {"path": str(path), "entries": entries, "count": len(entries)}, None
+    except OSError as exc:
+        return _tool_error("file_error", f"Could not list directory: {exc}")
+
+
+async def run_shell_handler(tool_input, *, call_index=0):
+    del call_index
+    command = str(tool_input.get("command", "")).strip()
+    if not command:
+        return _tool_error("invalid_input", "command is required")
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=_SHELL_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return _tool_error("timeout", f"Command timed out after {_SHELL_TIMEOUT}s")
+    except OSError as exc:
+        return _tool_error("exec_error", f"Could not execute command: {exc}")
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    # Cap output size
+    if len(stdout) > _SHELL_MAX_OUTPUT:
+        stdout = stdout[:_SHELL_MAX_OUTPUT] + f"\n... (truncated, {len(stdout_bytes)} bytes total)"
+    if len(stderr) > _SHELL_MAX_OUTPUT:
+        stderr = stderr[:_SHELL_MAX_OUTPUT] + f"\n... (truncated, {len(stderr_bytes)} bytes total)"
+    result = {"exit_code": proc.returncode, "stdout": stdout}
+    if stderr:
+        result["stderr"] = stderr
+    return result, None
+
+
 async def tf_repo_list_handler(tool_input, *, call_index=0):
     del tool_input, call_index
     from . import repos
@@ -1374,11 +1981,24 @@ LOCAL_TOOL_HANDLERS = {
     "tf_active": tf_active_handler,
     "tf_due_soon": tf_due_soon_handler,
     "tf_overdue": tf_overdue_handler,
+    "tf_today": tf_today_handler,
+    "tf_focus": tf_focus_handler,
+    "tf_unfocus": tf_unfocus_handler,
+    "tf_move_focus": tf_move_focus_handler,
+    "tf_create_goal": tf_create_goal_handler,
+    "tf_update_goal": tf_update_goal_handler,
+    "tf_goal_list": tf_goal_list_handler,
+    "tf_goal_complete": tf_goal_complete_handler,
+    "tf_goal_reopen": tf_goal_reopen_handler,
+    "tf_goal_remove": tf_goal_remove_handler,
     "load_tools": load_tools_handler,
     "notes_search": notes_search_handler,
     "notes_read": notes_read_handler,
     "tf_memory_read": tf_memory_read_handler,
     "tf_memory_update": tf_memory_update_handler,
+    "read_file": read_file_handler,
+    "list_dir": list_dir_handler,
+    "run_shell": run_shell_handler,
     "tf_repo_list": tf_repo_list_handler,
     "tf_repo_status": tf_repo_status_handler,
 }
@@ -1397,6 +2017,12 @@ def _build_mutation_event(tool_name: str, tool_input: dict[str, Any], result: An
     elif tool_name in {"tf_create_section", "tf_update_section", "tf_move_section", "tf_delete_section"}:
         entity_type = "section"
         entity_id = result.get("section_id") or tool_input.get("section_id")
+    elif tool_name in {"tf_focus", "tf_unfocus", "tf_move_focus"}:
+        entity_type = "today"
+        entity_id = tool_input.get("task_id")
+    elif tool_name in {"tf_create_goal", "tf_update_goal", "tf_goal_complete", "tf_goal_reopen", "tf_goal_remove"}:
+        entity_type = "goal"
+        entity_id = result.get("goal_id") or tool_input.get("goal_id")
     else:
         entity_type = "task"
         entity_id = result.get("task_id") or tool_input.get("task_id")
@@ -1415,8 +2041,28 @@ def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, default=str)}\n\n"
 
 
-async def sse_generator(request: Request, event_log: EventLog, runner_task: asyncio.Task[None]):
+def _chat_stream_response(generator) -> StreamingResponse:
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def sse_generator(
+    request: Request,
+    conn: sqlite3.Connection,
+    event_log: EventLog,
+    runner_task: asyncio.Task[None],
+    request_id: str,
+):
     tool_inputs: dict[str, dict[str, Any]] = {}
+    tool_calls: dict[str, dict[str, Any]] = {}
+    turn_tools: list[dict[str, Any]] = []
     assistant_chunks: list[str] = []
     pending_mutations: list[dict[str, Any]] = []
     event_iter = event_log.iter_from()
@@ -1446,13 +2092,24 @@ async def sse_generator(request: Request, event_log: EventLog, runner_task: asyn
 
             if event_type == "tool_call_start":
                 tool_call_id = str(event.get("tool_call_id", ""))
-                tool_inputs[tool_call_id] = event.get("tool_input") or {}
+                tool_input = event.get("tool_input") or {}
+                tool_name = str(event.get("tool_name", ""))
+                tool_inputs[tool_call_id] = tool_input
+                tool_entry = {
+                    "id": tool_call_id,
+                    "name": tool_name,
+                    "input": tool_input,
+                    "result": None,
+                    "error": None,
+                }
+                tool_calls[tool_call_id] = tool_entry
+                turn_tools.append(tool_entry)
                 yield _sse(
                     {
                         "type": "tool_call_start",
                         "tool_call_id": tool_call_id,
-                        "tool_name": event.get("tool_name"),
-                        "tool_input": event.get("tool_input") or {},
+                        "tool_name": tool_name,
+                        "tool_input": tool_input,
                     }
                 )
                 continue
@@ -1462,6 +2119,19 @@ async def sse_generator(request: Request, event_log: EventLog, runner_task: asyn
                 tool_name = str(event.get("tool_name", ""))
                 result = event.get("result")
                 error = event.get("error")
+                tool_entry = tool_calls.get(tool_call_id)
+                if tool_entry is None:
+                    tool_entry = {
+                        "id": tool_call_id,
+                        "name": tool_name,
+                        "input": tool_inputs.get(tool_call_id, {}),
+                        "result": None,
+                        "error": None,
+                    }
+                    tool_calls[tool_call_id] = tool_entry
+                    turn_tools.append(tool_entry)
+                tool_entry["result"] = result
+                tool_entry["error"] = error
                 yield _sse(
                     {
                         "type": "tool_call_complete",
@@ -1477,9 +2147,48 @@ async def sse_generator(request: Request, event_log: EventLog, runner_task: asyn
                 continue
 
             if event_type == "stream_complete":
+                assistant_text = "".join(assistant_chunks).strip()
+                full_content = assistant_text + _build_tool_summary(turn_tools)
+                if not full_content.strip():
+                    full_content = "(empty response)"
+                try:
+                    db.save_chat_message(conn, "assistant", full_content, request_id)
+                except Exception:
+                    log.warning("Failed to save assistant message for %s", request_id)
+
+                try:
+                    conn.execute("BEGIN")
+                    try:
+                        max_id_row = conn.execute(
+                            "SELECT MAX(id) AS max_id FROM chat_messages"
+                        ).fetchone()
+                        max_id = max_id_row["max_id"] if max_id_row and max_id_row["max_id"] is not None else 0
+                        compact_messages = db.load_recent_chat_messages(conn)
+                        conn.execute("COMMIT")
+                    except Exception:
+                        conn.execute("ROLLBACK")
+                        raise
+
+                    if needs_compaction(compact_messages):
+                        older = (
+                            compact_messages[:-KEEP_RECENT_MESSAGES]
+                            if len(compact_messages) > KEEP_RECENT_MESSAGES
+                            else compact_messages
+                        )
+                        summary = await _generate_summary(older)
+                        if summary and summary.strip():
+                            db.save_chat_compaction(
+                                conn,
+                                summary,
+                                keep_recent=KEEP_RECENT_MESSAGES,
+                                cutoff_max_id=max_id,
+                            )
+                except Exception:
+                    log.exception("Compaction failed")
+
                 for mutation in pending_mutations:
                     yield _sse(mutation)
-                yield _sse({"type": "done", "assistant_text": "".join(assistant_chunks).strip()})
+                yield _sse({"type": "done", "assistant_text": assistant_text})
                 break
 
             if event_type == "error":
@@ -1497,6 +2206,7 @@ async def sse_generator(request: Request, event_log: EventLog, runner_task: asyn
             pass
         except Exception:
             log.exception("chat_runner_error | %s", event_log._session_id)
+        conn.close()
 
 
 # Initialize DB on import
@@ -1769,42 +2479,277 @@ def overdue_tasks():
     return {"tasks": tasks}
 
 
+# ---------------------------------------------------------------------------
+# Today / Focus
+# ---------------------------------------------------------------------------
+
+@app.get("/api/today")
+def api_today(date: str | None = None):
+    conn = _conn()
+    try:
+        if date:
+            db._validate_date(date)
+        focus = db.get_today_focus(conn, date)
+        carried = db.get_carried_forward(conn, date)
+        goals = db.list_goals(conn)
+        return {
+            "date": date or db._today_date(),
+            "goals": goals,
+            "focus": focus,
+            "carried": carried,
+        }
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/api/today/focus")
+def api_add_focus(body: FocusCreate):
+    conn = _conn()
+    try:
+        if body.date:
+            db._validate_date(body.date)
+        inserted = db.add_focus(conn, body.task_id, body.date, body.position)
+    except ValueError as e:
+        conn.close()
+        raise HTTPException(400, str(e))
+    conn.close()
+    invalidate_workspace_summary_cache()
+    return {"status": "ok", "inserted": inserted}
+
+
+@app.patch("/api/today/focus/{task_id}")
+def api_move_focus(task_id: int, body: FocusMove):
+    conn = _conn()
+    try:
+        if body.date:
+            db._validate_date(body.date)
+        ok = db.move_focus(conn, task_id, body.position, body.date)
+    except ValueError as e:
+        conn.close()
+        raise HTTPException(400, str(e))
+    conn.close()
+    if not ok:
+        raise HTTPException(404, "Focus entry not found")
+    invalidate_workspace_summary_cache()
+    return {"status": "ok"}
+
+
+@app.delete("/api/today/focus/{task_id}")
+def api_remove_focus(task_id: int, date: str | None = None):
+    conn = _conn()
+    try:
+        if date:
+            db._validate_date(date)
+        ok = db.remove_focus(conn, task_id, date)
+    except ValueError as e:
+        conn.close()
+        raise HTTPException(400, str(e))
+    conn.close()
+    if not ok:
+        raise HTTPException(404, "Focus entry not found")
+    invalidate_workspace_summary_cache()
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Goals
+# ---------------------------------------------------------------------------
+
+@app.get("/api/goals")
+def api_list_goals(active_only: bool = True):
+    conn = _conn()
+    goals = db.list_goals(conn, active_only=active_only)
+    conn.close()
+    return {"goals": goals}
+
+
+@app.post("/api/goals")
+def api_create_goal(body: GoalCreate):
+    conn = _conn()
+    try:
+        goal_id = db.create_goal(conn, body.text, body.timeframe)
+    except ValueError as e:
+        conn.close()
+        raise HTTPException(400, str(e))
+    conn.close()
+    invalidate_workspace_summary_cache()
+    return {"goal_id": goal_id}
+
+
+@app.patch("/api/goals/{goal_id}")
+def api_update_goal(goal_id: int, body: GoalUpdate):
+    conn = _conn()
+    fields = {}
+    for key in ("text", "timeframe"):
+        val = getattr(body, key)
+        if val is not None:
+            fields[key] = val
+    try:
+        ok = db.update_goal(conn, goal_id, **fields)
+    except ValueError as e:
+        conn.close()
+        raise HTTPException(400, str(e))
+    conn.close()
+    if not ok:
+        raise HTTPException(404, "Goal not found")
+    invalidate_workspace_summary_cache()
+    return {"status": "ok"}
+
+
+@app.post("/api/goals/{goal_id}/complete")
+def api_complete_goal(goal_id: int):
+    conn = _conn()
+    ok = db.complete_goal(conn, goal_id)
+    conn.close()
+    if not ok:
+        raise HTTPException(404, "Goal not found")
+    invalidate_workspace_summary_cache()
+    return {"status": "ok"}
+
+
+@app.post("/api/goals/{goal_id}/reopen")
+def api_reopen_goal(goal_id: int):
+    conn = _conn()
+    ok = db.reopen_goal(conn, goal_id)
+    conn.close()
+    if not ok:
+        raise HTTPException(404, "Goal not found")
+    invalidate_workspace_summary_cache()
+    return {"status": "ok"}
+
+
+@app.delete("/api/goals/{goal_id}")
+def api_delete_goal(goal_id: int):
+    conn = _conn()
+    ok = db.delete_goal(conn, goal_id)
+    conn.close()
+    if not ok:
+        raise HTTPException(404, "Goal not found")
+    invalidate_workspace_summary_cache()
+    return {"status": "ok"}
+
+
+@app.get("/api/chat/history")
+def get_chat_history():
+    conn = _conn()
+    try:
+        messages = db.load_recent_chat_messages(conn, 50)
+        return {"messages": messages}
+    finally:
+        conn.close()
+
+
+@app.post("/api/chat/history/reset")
+def reset_chat_history():
+    conn = _conn()
+    try:
+        db.mark_chat_history_reset(conn)
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/chat/history/migrate")
+def migrate_chat_history(body: dict[str, Any]):
+    messages = body.get("messages", []) if isinstance(body, dict) else []
+    conn = _conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute("SELECT 1 FROM chat_messages LIMIT 1").fetchone()
+            if existing:
+                conn.execute("COMMIT")
+                return {"status": "already_migrated"}
+
+            valid: list[dict[str, str]] = []
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                role = message.get("role")
+                content = message.get("content")
+                if role not in ("user", "assistant") or not content:
+                    continue
+                if role == "assistant" and "[Error:" in content:
+                    if valid and valid[-1]["role"] == "user":
+                        valid.pop()
+                    continue
+                valid.append({"role": str(role), "content": str(content)})
+
+            while valid and valid[-1]["role"] == "user":
+                valid.pop()
+
+            count = 0
+            for message in valid:
+                conn.execute(
+                    "INSERT INTO chat_messages (role, content) VALUES (?, ?)",
+                    (message["role"], message["content"]),
+                )
+                count += 1
+
+            conn.execute("COMMIT")
+            return {"status": "ok", "migrated": count}
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
 @app.post("/api/chat")
 async def chat(body: ChatRequest, request: Request):
     if not _has_anthropic_credential():
         return JSONResponse(status_code=503, content={"error": "Set ANTHROPIC_AUTH_TOKEN (oauth) or ANTHROPIC_API_KEY (api) to enable chat"})
-    if not body.messages:
-        raise HTTPException(400, "messages must not be empty")
+    if not body.message.strip():
+        raise HTTPException(400, "message must not be empty")
 
-    session_id = f"tf-{uuid4().hex[:8]}"
-    log.info("chat_start | %s | view=%s messages=%d", session_id, body.context.view, len(body.messages))
-    event_log = EventLog(session_id=session_id)
-    dispatcher = ToolDispatcher(
-        mcp_client=mcp_manager,
-        local_tool_handlers=LOCAL_TOOL_HANDLERS,
-    )
-    runner = AgentRunner(
-        dispatcher=dispatcher,
-        event_log=event_log,
-        session_id=event_log._session_id,
-        auth_config=_anthropic_auth_config(),
-        mcp_client=mcp_manager,
-        get_tool_definitions=lambda: TF_TOOL_DEFINITIONS + mcp_manager.get_tool_definitions(),
-    )
-    runner_task = asyncio.create_task(
-        runner.run(
-            messages=[message.model_dump() for message in body.messages],
-            system_prompt=build_taskflow_prompt(body.context),
+    conn = _conn()
+    try:
+        messages = db.load_recent_chat_messages(conn, limit=50)
+        request_id = uuid4().hex
+        try:
+            db.save_chat_message(conn, "user", body.message, request_id)
+        except Exception:
+            log.exception("Failed to save user message")
+
+            async def save_failed_generator():
+                try:
+                    yield _sse({"type": "error", "error": "save_failed"})
+                finally:
+                    conn.close()
+
+            return _chat_stream_response(save_failed_generator())
+
+        messages.append({"role": "user", "content": body.message})
+
+        session_id = f"tf-{uuid4().hex[:8]}"
+        log.info("chat_start | %s | view=%s messages=%d", session_id, body.context.view, len(messages))
+        event_log = EventLog(session_id=session_id)
+        dispatcher = ToolDispatcher(
+            mcp_client=mcp_manager,
+            local_tool_handlers=LOCAL_TOOL_HANDLERS,
         )
-    )
-    return StreamingResponse(
-        sse_generator(request, event_log, runner_task),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        runner = AgentRunner(
+            dispatcher=dispatcher,
+            event_log=event_log,
+            session_id=event_log._session_id,
+            auth_config=_anthropic_auth_config(),
+            mcp_client=mcp_manager,
+            get_tool_definitions=lambda: TF_TOOL_DEFINITIONS + mcp_manager.get_tool_definitions(),
+        )
+        runner_task = asyncio.create_task(
+            runner.run(
+                messages=messages,
+                system_prompt=build_taskflow_prompt(body.context),
+            )
+        )
+    except Exception:
+        conn.close()
+        raise
+
+    return _chat_stream_response(
+        sse_generator(request, conn, event_log, runner_task, request_id)
     )
 
 

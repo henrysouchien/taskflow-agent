@@ -495,6 +495,137 @@ def tf_overdue() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Today / Goals
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def tf_today(date: Optional[str] = None) -> str:
+    """Return focus items, active goals, and carried-forward tasks for a date."""
+    conn = _conn()
+    try:
+        if date is not None:
+            db._validate_date(date)
+        focus = db.get_today_focus(conn, date)
+        carried = db.get_carried_forward(conn, date)
+        goals = db.list_goals(conn)
+    except ValueError as e:
+        conn.close()
+        return _error(str(e))
+    conn.close()
+    return _json({"date": date or db._today_date(), "goals": goals, "focus": focus, "carried": carried})
+
+
+@mcp.tool()
+def tf_focus(task_id: int, date: Optional[str] = None, position: Optional[int] = None) -> str:
+    """Add a task to the daily focus list."""
+    conn = _conn()
+    try:
+        inserted = db.add_focus(conn, task_id, date=date, position=position)
+    except ValueError as e:
+        conn.close()
+        return _error(str(e))
+    conn.close()
+    return _json({"status": "ok", "inserted": inserted})
+
+
+@mcp.tool()
+def tf_unfocus(task_id: int, date: Optional[str] = None) -> str:
+    """Remove a task from the daily focus list."""
+    conn = _conn()
+    try:
+        ok = db.remove_focus(conn, task_id, date=date)
+    except ValueError as e:
+        conn.close()
+        return _error(str(e))
+    conn.close()
+    return _json({"status": "ok" if ok else "not_found"})
+
+
+@mcp.tool()
+def tf_move_focus(task_id: int, position: int, date: Optional[str] = None) -> str:
+    """Reorder a focused task within a day."""
+    conn = _conn()
+    try:
+        ok = db.move_focus(conn, task_id, position, date=date)
+    except ValueError as e:
+        conn.close()
+        return _error(str(e))
+    conn.close()
+    return _json({"status": "ok" if ok else "not_found"})
+
+
+@mcp.tool()
+def tf_create_goal(text: str, timeframe: str = "week") -> str:
+    """Create a new goal."""
+    conn = _conn()
+    try:
+        goal_id = db.create_goal(conn, text, timeframe=timeframe)
+    except ValueError as e:
+        conn.close()
+        return _error(str(e))
+    conn.close()
+    return _json({"status": "ok", "goal_id": goal_id})
+
+
+@mcp.tool()
+def tf_update_goal(
+    goal_id: int,
+    text: Optional[str] = None,
+    timeframe: Optional[str] = None,
+) -> str:
+    """Update goal text or timeframe. Only provided fields are changed."""
+    conn = _conn()
+    fields = {}
+    if text is not None:
+        fields["text"] = text
+    if timeframe is not None:
+        fields["timeframe"] = timeframe
+    try:
+        ok = db.update_goal(conn, goal_id, **fields)
+    except ValueError as e:
+        conn.close()
+        return _error(str(e))
+    conn.close()
+    return _json({"status": "ok" if ok else "not_found"})
+
+
+@mcp.tool()
+def tf_goal_list(active_only: bool = True) -> str:
+    """List goals across all timeframes."""
+    conn = _conn()
+    goals = db.list_goals(conn, active_only=active_only)
+    conn.close()
+    return _json({"goals": goals, "count": len(goals)})
+
+
+@mcp.tool()
+def tf_goal_complete(goal_id: int) -> str:
+    """Mark a goal as completed."""
+    conn = _conn()
+    ok = db.complete_goal(conn, goal_id)
+    conn.close()
+    return _json({"status": "ok" if ok else "not_found"})
+
+
+@mcp.tool()
+def tf_goal_reopen(goal_id: int) -> str:
+    """Reopen a completed goal."""
+    conn = _conn()
+    ok = db.reopen_goal(conn, goal_id)
+    conn.close()
+    return _json({"status": "ok" if ok else "not_found"})
+
+
+@mcp.tool()
+def tf_goal_remove(goal_id: int) -> str:
+    """Delete a goal permanently."""
+    conn = _conn()
+    ok = db.delete_goal(conn, goal_id)
+    conn.close()
+    return _json({"status": "ok" if ok else "not_found"})
+
+
+# ---------------------------------------------------------------------------
 # Import
 # ---------------------------------------------------------------------------
 
