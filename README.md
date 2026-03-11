@@ -6,30 +6,91 @@ SQLite backend, 23+ MCP tools, web UI with embedded AI chat, and a FastAPI REST 
 
 ## Features
 
-- **23+ MCP tools** — projects, tasks, sections, goals, daily focus, search, views, repo integration, service lifecycle
+- **23+ MCP tools** — projects, tasks, sections, goals, daily focus, search, views, repo integration
 - **Web UI** — dark-theme SPA with project boards, task details, inline editing
 - **AI chat** — embedded Claude chat with workspace awareness, tool access, and persistent memory
 - **Daily focus** — Today view with goals, focus list, and AI-assisted daily planning
 - **Goals** — timeframe-scoped goals (day/week/month/quarter) that guide daily prioritization
-- **Agent memory** — persistent context across chat sessions (preferences, decisions, patterns)
+- **Agent memory** — persistent context across chat sessions
 - **Repo integration** — read-only git status, recent commits, and TODOs across connected repos
 - **FTS search** — full-text search across task names and notes
-- **Server-side chat storage** — chat history persisted in SQLite with compaction
 - **Asana import** — bulk import from Asana CSV exports
-- **Service management** — start/stop the web server via MCP tools or Makefile
 
 ## Quick Start
 
 ```bash
-pip install -e ".[web]"
+pip install taskflow-agent[web]
 
 # Start the MCP server (for Claude Code)
 taskflow
 
-# Start the web UI
-make serve          # foreground
-taskflow-web        # via CLI
+# Start the web UI (port 8787)
+taskflow-web
 ```
+
+## Setup
+
+### 1. Environment
+
+Create a `.env` file in your working directory:
+
+```bash
+# Auth — pick one mode
+ANTHROPIC_AUTH_MODE=api_key          # "oauth" or "api_key"
+ANTHROPIC_API_KEY=sk-ant-...         # if using api_key mode
+ANTHROPIC_AUTH_TOKEN=...             # if using oauth mode
+
+# Optional
+ANTHROPIC_MODEL=claude-sonnet-4-6   # default model for chat
+LOG_LEVEL=INFO                       # DEBUG, INFO, WARNING, ERROR
+```
+
+The MCP server (task management tools) works without auth. Auth is only needed for the web UI's embedded AI chat.
+
+### 2. Register MCP Server
+
+Add to `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "taskflow": {
+      "type": "stdio",
+      "command": "path/to/venv/bin/python",
+      "args": ["-m", "src.server"],
+      "cwd": "path/to/taskflow"
+    }
+  }
+}
+```
+
+### 3. Configure Repos (optional)
+
+Create `data/repos.json` to connect git repos for status tracking:
+
+```json
+{
+  "my-project": "/absolute/path/to/my-project",
+  "another-repo": "/absolute/path/to/another-repo"
+}
+```
+
+`tf_repo_list` and `tf_repo_status` use this to show branch, state, recent commits, and TODOs. Read-only.
+
+### 4. Run
+
+```bash
+# Web UI
+taskflow-web                # port 8787
+# or with make (if developing from source):
+make serve                  # foreground
+make dev                    # with auto-reload
+
+# MCP server only
+taskflow
+```
+
+Open `http://localhost:8787`.
 
 ## MCP Tools
 
@@ -98,41 +159,36 @@ taskflow-web        # via CLI
 | `tf_serve_start` | Start web server in background |
 | `tf_serve_stop` | Stop web server |
 
-## MCP Registration
+## Embedded Chat
 
-Add to `~/.claude.json`:
+The web UI includes an AI chat panel (toggle with `C`) powered by [ai-agent-gateway](https://pypi.org/project/ai-agent-gateway/).
 
-```json
-{
-  "mcpServers": {
-    "taskflow": {
-      "type": "stdio",
-      "command": "path/to/venv/bin/python",
-      "args": ["-m", "src.server"],
-      "cwd": "path/to/taskflow"
-    }
-  }
-}
-```
+### What the chat agent can do
 
-## Web UI
+- All `tf_*` tools — manage projects, tasks, goals, focus
+- `read_file` / `list_dir` / `run_shell` — filesystem access
+- `notes_search` / `notes_read` — Apple Notes integration
+- `tf_memory_read` / `tf_memory_update` — persistent memory across sessions (stored in `data/agent_memory.md`, 12 KB max)
+- `load_tools` — dynamically load any MCP server from `~/.claude.json` on demand
 
-Start the web server on port 8787:
+### Deferred MCP Servers
 
-```bash
-make serve    # foreground, Ctrl-C to stop
-make dev      # with auto-reload
-make status   # check if running
-make stop     # stop the server
-```
-
-Or manage via MCP tools from Claude Code — ask Claude to "start the taskflow server."
+The chat agent can load any `stdio`-type MCP server registered in your `~/.claude.json` on demand. The agent calls `load_tools("server-name")` and gains access to that server's tools for the session.
 
 ## Database
 
-SQLite with WAL mode. Tables: `projects`, `sections`, `tasks`, `tags`, `task_tags`, `tasks_fts` (FTS5), `goals`, `today_focus`, `chat_messages`.
+SQLite with WAL mode. Created automatically on first run.
 
-Database is created automatically on first run via `db.init_db()`.
+Tables: `projects`, `sections`, `tasks`, `tags`, `task_tags`, `tasks_fts` (FTS5), `goals`, `daily_focus`, `chat_messages`.
+
+## Asana Import
+
+```bash
+# Via MCP tool:
+tf_import_asana directory=/path/to/Asana-Export/
+```
+
+Import is additive — re-importing creates duplicates. Delete `taskflow.db` first for a clean re-import.
 
 ## License
 

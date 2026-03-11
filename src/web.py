@@ -10,6 +10,7 @@ import os
 import sqlite3
 import subprocess
 import time
+from datetime import date as dt_date
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -53,13 +54,14 @@ logging.getLogger("claude_gateway").addHandler(_file_handler)
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from claude_gateway import AgentRunner, EventLog, McpClientManager, ToolDispatcher
+from claude_gateway import AgentRunner, EventLog, McpClientManager
+from claude_gateway.tool_dispatcher import ToolDispatcher
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, workflows
 
 app = FastAPI(title="Taskflow")
 
@@ -147,6 +149,7 @@ class TaskUpdate(BaseModel):
     due_date: Optional[str] = None
     tags: Optional[str] = None
     section_id: Optional[int] = None
+    position: Optional[int] = None
 
 
 class ProjectCreate(BaseModel):
@@ -701,15 +704,19 @@ that code projects get naturally: everything in one place, AI collaborator, clea
 
 Structure follows three layers:
 - Project plan = the orientation ("what are we doing and why") — freeform markdown
-- Sections = independent workstreams, each with their own plan
+- Sections = PHASES IN A SEQUENCE, not categories. They answer "what order do I do this in."
+  Good: "Phase 1: Schema", "Phase 2: API". Bad: "API", "Frontend", "Database" (that's just filing).
+  Do NOT default to grouping by category — always think about sequencing and what comes next.
 - Tasks = atomic action items extracted from plans
 
 Key principles:
 - Plans before tasks — think first, structure second, execute third. Don't jump to creating tasks.
 - Goals set direction — concrete targets (not vague aspirations) that drive daily focus choices.
-- The daily loop: Goals → "what's highest leverage today?" → Today view → execute → review.
+- Daily planning = prioritization + scoping against time. What's highest leverage? What unblocks things?
+  How much time is available? What fits, what gets cut? Rough-estimate in conversation, not schema fields.
 - Collaborator, not task bot — read the plan, understand context, suggest and act, don't just CRUD.
 - Connected — you can reach into Roam, Drive, Sheets, Gmail, etc. to do real work, not just manage tasks.
+- Taskflow is for projects with forward motion. Admin tasks, routines, and errands stay in Roam.
 
 MEMORY MANAGEMENT:
 Use tf_memory_read / tf_memory_update to maintain persistent context across sessions.
@@ -746,6 +753,7 @@ Core (always loaded):
 - `tf_*` tools — manage Taskflow projects, sections, tasks, search, and workspace views.
 - `tf_today` / `tf_focus` / `tf_unfocus` / `tf_move_focus` — daily focus list management.
 - `tf_create_goal` / `tf_update_goal` / `tf_goal_list` / `tf_goal_complete` / `tf_goal_reopen` / `tf_goal_remove` — goal management.
+- `tf_workflow_list` / `tf_workflow_get` / `tf_workflow_save` — reusable project templates.
 - `read_file` / `list_dir` / `run_shell` — read files, browse directories, run shell commands (git, grep, etc.).
 - `notes_search` / `notes_read` — search and read Apple Notes (the user's phone-accessible capture tool).
 - `tf_repo_list` / `tf_repo_status` — check git status, recent commits, and open TODOs across connected repositories.
@@ -758,6 +766,13 @@ Deferred MCP servers (call `load_tools` with server_name first):
 - `notify` — Send notifications via Telegram or iMessage.
 - Other servers: {', '.join(s for s in deferred_tools if s not in ('roam-research', 'drive-mcp', 'gsheets-mcp', 'gmail-mcp', 'notify'))}
 
+Sub-agent delegation:
+- You have a `run_agent` tool that spawns a focused sub-agent with its own context window.
+- Use it for intensive work that would bloat this conversation: code exploration, audits, file analysis, searching through notes or Roam pages, or research tasks that require many tool calls.
+- The sub-agent is read-only. It cannot create, update, or delete tasks or projects. You handle all mutations based on its findings.
+- Write detailed, specific instructions in the `task` field. The sub-agent has access to `read_file`, `list_dir`, git repo tools, read-only task tools, Apple Notes, and any MCP servers you've already loaded via `load_tools`. It does NOT have `run_shell`.
+- If you need the sub-agent to access an MCP server such as Roam, call `load_tools` first, then spawn the agent.
+
 BEHAVIORAL GUIDELINES:
 - When the user is looking at a project, treat that project as the default context.
 - Reference project plans when suggesting next steps.
@@ -765,11 +780,15 @@ BEHAVIORAL GUIDELINES:
 - For planning-heavy requests, improve the plan markdown first, then extract tasks.
 - When the user mentions notes or ideas they captured, check Apple Notes or Roam.
 - When discussing code projects or repo work, use `tf_repo_status` to check current state before making recommendations.
+- When the user wants to start a repeatable project type (video, thesis, blog post), check `tf_workflow_list` first. If a matching workflow exists, read it with `tf_workflow_get` and propose using it to scaffold the project. Wait for user confirmation before creating. Customize the plan from context; workflows are starting points, not rigid scripts.
+- When a project reveals a repeatable process, suggest saving it as a workflow for next time.
+- Workflows live in `data/workflows/` as markdown files. The user can also edit them directly.
 - Load deferred MCP servers proactively when the conversation clearly needs them.
 - Daily planning:
-  When the user asks what to focus on today, or the Today view is empty, read goals first, survey overdue and due-soon work, consider carry-forward items, propose 3-5 high-leverage tasks with reasons, iterate with the user, then pin the agreed tasks with `tf_focus`.
+  When the user asks what to focus on today, or the Today view is empty: read goals first, survey active projects (in phase sequence), consider carry-forward items, ask about time constraints ("how much time do you have today?"), then propose 3-5 high-leverage tasks with reasons. Focus on what moves the needle most and what unblocks other work. Rough-estimate task duration in conversation to help scope. Iterate with the user, then pin the agreed tasks with `tf_focus`.
 - Prioritization heuristics:
-  Overdue work with external stakeholders beats internal deadlines, unblockers beat isolated work, goal-aligned tasks beat dormant projects, quick wins are useful early, and focus lists should stay short.
+  Unblockers beat isolated work, goal-aligned tasks beat dormant projects, sequential dependencies matter (what's blocking the next phase?), quick wins are useful early, and focus lists should stay short. Be ruthless about cutting — if it doesn't fit the time available, defer it.
+- When structuring projects, organize sections as phases/sequence (what to do first, second, third), NOT by category (API, Frontend, Database). Sequencing tells you what's next; categories are just filing.
 """.strip()
     return _trim_for_token_budget(prompt, PROMPT_TOKEN_BUDGET)
 
@@ -1071,6 +1090,24 @@ TF_TOOL_DEFINITIONS = [
         "description": "Load deferred MCP tools for a configured server from ~/.claude.json.",
         "input_schema": _schema({"server_name": {"type": "string"}}, ["server_name"]),
     },
+    {
+        "name": "run_agent",
+        "description": "Spawn a read-only sub-agent to perform a focused task. The sub-agent gets its own context window and returns a structured response. Use this for intensive work that would bloat the main conversation: code audits, file exploration, note triage, research. The sub-agent cannot create, update, or delete tasks or projects; you handle mutations based on its findings.",
+        "input_schema": _schema(
+            {
+                "task": {
+                    "type": "string",
+                    "description": "Detailed instructions for the sub-agent.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model override. Defaults to claude-sonnet-4-6.",
+                    "enum": ["claude-sonnet-4-6", "claude-opus-4-6"],
+                },
+            },
+            required=["task"],
+        ),
+    },
     # --- Apple Notes tools ---
     {
         "name": "notes_search",
@@ -1102,6 +1139,24 @@ TF_TOOL_DEFINITIONS = [
         "input_schema": _schema(
             {"content": {"type": "string", "description": "Full markdown content to write to the memory file."}},
             ["content"],
+        ),
+    },
+    {
+        "name": "tf_workflow_list",
+        "description": "List available project workflow templates.",
+        "input_schema": _schema({}),
+    },
+    {
+        "name": "tf_workflow_get",
+        "description": "Read a workflow template by slug.",
+        "input_schema": _schema({"slug": {"type": "string"}}, ["slug"]),
+    },
+    {
+        "name": "tf_workflow_save",
+        "description": "Create or update a workflow template. Content is markdown with simple frontmatter (--- delimited, plain 'key: value' lines, no quoting or nesting). Required field: name.",
+        "input_schema": _schema(
+            {"slug": {"type": "string"}, "content": {"type": "string"}},
+            ["slug", "content"],
         ),
     },
     # --- Filesystem tools ---
@@ -1183,6 +1238,30 @@ MUTATING_TOOL_NAMES = {
     "tf_goal_reopen",
     "tf_goal_remove",
 }
+_SUB_AGENT_EXCLUDED_TOOLS: set[str] = {
+    "run_agent",
+    "run_shell",
+    "load_tools",
+    "tf_memory_read",
+    "tf_memory_update",
+} | MUTATING_TOOL_NAMES
+
+_SUB_AGENT_SYSTEM_PROMPT = (
+    "You are a focused research assistant working on behalf of a project manager. "
+    "You have read-only access to files, git repos, task data, and notes. "
+    "You do NOT have shell access or the ability to modify tasks/projects.\n"
+    "Complete the assigned task thoroughly and return a clear, structured response.\n\n"
+    "Be concise — your output will be read by the orchestrator agent, not a human. "
+    "If any tool call fails or returns unexpected data, note the issue clearly in "
+    "your response rather than silently proceeding.\n\n"
+    "Today's date: {date}"
+)
+
+_SUB_AGENT_MAX_TURNS = 15
+_SUB_AGENT_TIMEOUT = int(os.getenv("SUB_AGENT_TIMEOUT", "300"))
+_SUB_AGENT_CLIENT_TIMEOUT = 90
+_SUB_AGENT_MAX_TOKENS = 32_000
+_SUB_AGENT_DEFAULT_MODEL = "claude-sonnet-4-6"
 
 mcp_manager = McpClientManager(
     allowed_servers=None,
@@ -1701,7 +1780,12 @@ async def load_tools_handler(tool_input, *, call_index=0):
 
     async with mcp_manager._lock:
         if server_name in mcp_manager._servers:
-            return {"status": "ok", "server_name": server_name, "already_loaded": True}, None
+            return {
+                "status": "ok",
+                "server_name": server_name,
+                "already_loaded": True,
+                "_load_servers": [server_name],
+            }, None
 
         config = _claude_config()
         mcp_servers = config.get("mcpServers")
@@ -1729,6 +1813,63 @@ async def load_tools_handler(tool_input, *, call_index=0):
         "server_name": server_name,
         "_load_servers": [server_name],
     }, None
+
+
+def make_run_agent_handler(
+    runner_ref: list[Any],
+    local_tool_handlers: dict[str, Any],
+    mcp_manager: McpClientManager,
+):
+    async def _handle_run_agent(
+        tool_input: dict,
+        *,
+        call_index: int = 0,
+    ) -> tuple[Any | None, dict[str, Any] | None]:
+        runner = runner_ref[0]
+        if runner is None:
+            return None, {"code": "internal_error", "message": "Runner not initialized"}
+
+        task = tool_input.get("task", "")
+        if not task or not isinstance(task, str):
+            return None, {"code": "invalid_input", "message": "task is required"}
+
+        raw_model = tool_input.get("model")
+        allowed = {"claude-sonnet-4-6", "claude-opus-4-6"}
+        if raw_model is not None and raw_model not in allowed:
+            return None, {"code": "invalid_input", "message": f"Invalid model: {raw_model}"}
+
+        system_prompt = _SUB_AGENT_SYSTEM_PROMPT.format(
+            date=dt_date.today().isoformat()
+        )
+        effective_model = raw_model or _SUB_AGENT_DEFAULT_MODEL
+
+        sub_local = {
+            name: handler
+            for name, handler in local_tool_handlers.items()
+            if name not in _SUB_AGENT_EXCLUDED_TOOLS
+        }
+
+        sub_dispatcher = ToolDispatcher(
+            mcp_client=mcp_manager,
+            local_tool_handlers=sub_local,
+            needs_approval=lambda _: False,
+        )
+
+        result, error = await runner.spawn_sub_agent(
+            task,
+            model=effective_model,
+            system_prompt=system_prompt,
+            dispatcher=sub_dispatcher,
+            excluded_tools=_SUB_AGENT_EXCLUDED_TOOLS,
+            max_turns=_SUB_AGENT_MAX_TURNS,
+            timeout=_SUB_AGENT_TIMEOUT,
+            client_timeout=_SUB_AGENT_CLIENT_TIMEOUT,
+            max_tokens=_SUB_AGENT_MAX_TOKENS,
+            call_index=call_index,
+        )
+        return result, error
+
+    return _handle_run_agent
 
 
 def _run_osascript(script: str, timeout: float = 15.0) -> str:
@@ -1843,6 +1984,50 @@ async def tf_memory_update_handler(tool_input, *, call_index=0):
         tmp.unlink(missing_ok=True)
         return _tool_error("file_error", f"Could not write memory file: {exc}")
     return {"status": "ok", "path": str(MEMORY_FILE_PATH), "chars": len(content)}, None
+
+
+def _workflow_value_error(exc: ValueError):
+    message = str(exc)
+    if message.startswith("Invalid slug:") or message == "Frontmatter must include 'name' field":
+        return _tool_error("invalid_input", message)
+    if "exceeds size limit" in message or message == "Content exceeds limit (16 KB / 200 lines)":
+        return _tool_error("too_large", message)
+    return _tool_error("invalid_input", message)
+
+
+async def tf_workflow_list_handler(tool_input, *, call_index=0):
+    del tool_input, call_index
+    try:
+        workflow_items = workflows.list_workflows()
+    except OSError as exc:
+        return _tool_error("file_error", f"Could not list workflows: {exc}")
+    return {"workflows": workflow_items, "count": len(workflow_items)}, None
+
+
+async def tf_workflow_get_handler(tool_input, *, call_index=0):
+    del call_index
+    slug = str(tool_input.get("slug", ""))
+    try:
+        workflow_item = workflows.get_workflow(slug)
+    except ValueError as exc:
+        return _workflow_value_error(exc)
+    except OSError as exc:
+        return _tool_error("file_error", f"Could not read workflow '{slug}': {exc}")
+    if workflow_item is None:
+        return _tool_error("not_found", f"Workflow '{slug}' not found")
+    return workflow_item, None
+
+
+async def tf_workflow_save_handler(tool_input, *, call_index=0):
+    del call_index
+    slug = str(tool_input.get("slug", ""))
+    content = str(tool_input.get("content", ""))
+    try:
+        return workflows.save_workflow(slug, content), None
+    except ValueError as exc:
+        return _workflow_value_error(exc)
+    except OSError as exc:
+        return _tool_error("file_error", f"Could not write workflow '{slug}': {exc}")
 
 
 _READ_FILE_MAX_LINES = 2000
@@ -1996,6 +2181,9 @@ LOCAL_TOOL_HANDLERS = {
     "notes_read": notes_read_handler,
     "tf_memory_read": tf_memory_read_handler,
     "tf_memory_update": tf_memory_update_handler,
+    "tf_workflow_list": tf_workflow_list_handler,
+    "tf_workflow_get": tf_workflow_get_handler,
+    "tf_workflow_save": tf_workflow_save_handler,
     "read_file": read_file_handler,
     "list_dir": list_dir_handler,
     "run_shell": run_shell_handler,
@@ -2375,7 +2563,7 @@ def create_task(body: TaskCreate):
 def update_task(task_id: int, body: TaskUpdate):
     conn = _conn()
     fields = {}
-    for key in ("name", "notes", "assignee", "start_date", "due_date", "section_id"):
+    for key in ("name", "notes", "assignee", "start_date", "due_date", "section_id", "position"):
         val = getattr(body, key)
         if val is not None:
             fields[key] = val
@@ -2387,6 +2575,23 @@ def update_task(task_id: int, body: TaskUpdate):
         raise HTTPException(404, "Task not found")
     invalidate_workspace_summary_cache()
     return {"status": "ok"}
+
+
+@app.post("/api/tasks/reorder")
+def reorder_tasks(body: dict[str, Any]):
+    """Batch update task positions. Body: { task_ids: [id1, id2, ...] }
+    Sets position = index for each task in the array."""
+    task_ids = body.get("task_ids", [])
+    if not task_ids or not isinstance(task_ids, list):
+        raise HTTPException(400, "task_ids must be a non-empty list")
+    conn = _conn()
+    try:
+        for i, tid in enumerate(task_ids):
+            db.update_task(conn, int(tid), position=i)
+    finally:
+        conn.close()
+    invalidate_workspace_summary_cache()
+    return {"status": "ok", "count": len(task_ids)}
 
 
 @app.post("/api/tasks/{task_id}/complete")
@@ -2726,18 +2931,36 @@ async def chat(body: ChatRequest, request: Request):
         session_id = f"tf-{uuid4().hex[:8]}"
         log.info("chat_start | %s | view=%s messages=%d", session_id, body.context.view, len(messages))
         event_log = EventLog(session_id=session_id)
+        request_handlers = dict(LOCAL_TOOL_HANDLERS)
+        loaded_mcp_servers: set[str] = set()
+        runner_ref: list[AgentRunner | None] = [None]
+        request_handlers["run_agent"] = make_run_agent_handler(
+            runner_ref,
+            request_handlers,
+            mcp_manager,
+        )
         dispatcher = ToolDispatcher(
             mcp_client=mcp_manager,
-            local_tool_handlers=LOCAL_TOOL_HANDLERS,
+            local_tool_handlers=request_handlers,
+            needs_approval=lambda _: False,
         )
+
+        def get_tool_definitions():
+            mcp_defs = mcp_manager.get_server_tool_definitions(loaded_mcp_servers)
+            return TF_TOOL_DEFINITIONS + mcp_defs
+
         runner = AgentRunner(
             dispatcher=dispatcher,
             event_log=event_log,
             session_id=event_log._session_id,
             auth_config=_anthropic_auth_config(),
             mcp_client=mcp_manager,
-            get_tool_definitions=lambda: TF_TOOL_DEFINITIONS + mcp_manager.get_tool_definitions(),
+            loaded_mcp_servers=loaded_mcp_servers,
+            get_tool_definitions=get_tool_definitions,
+            client_timeout=90.0,
+            per_turn_timeout=120.0,
         )
+        runner_ref[0] = runner
         runner_task = asyncio.create_task(
             runner.run(
                 messages=messages,

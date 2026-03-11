@@ -613,6 +613,17 @@ button { cursor: pointer; }
 }
 .task-row:hover { background: var(--bg-surface); }
 .task-row.selected { background: var(--bg-surface-2); }
+.task-row[draggable="true"] { cursor: grab; }
+.task-row.dragging { opacity: 0.4; }
+.task-row.drag-over { border-top: 2px solid var(--accent); margin-top: -2px; }
+.t-drag {
+  flex-shrink: 0; width: 14px; margin-top: 2px;
+  color: var(--text-muted); font-size: 10px; cursor: grab;
+  opacity: 0; transition: opacity var(--transition);
+  user-select: none;
+}
+.task-row:hover .t-drag { opacity: 0.6; }
+.t-drag:hover { opacity: 1 !important; }
 
 .t-check {
   width: 16px; height: 16px; border: 1.5px solid var(--border);
@@ -1154,6 +1165,13 @@ button { cursor: pointer; }
   font-size: 11px;
   color: var(--accent);
 }
+.chat-tool-hint {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  margin-left: 4px;
+  opacity: 0.7;
+}
 .chat-tool-state {
   font-size: 10px;
   text-transform: uppercase;
@@ -1162,6 +1180,28 @@ button { cursor: pointer; }
 }
 .chat-tool-card.complete .chat-tool-state { color: var(--green); }
 .chat-tool-card.error .chat-tool-state { color: var(--red); }
+.chat-tool-group {
+  width: 100%;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.chat-tool-group summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.chat-tool-group summary::-webkit-details-marker { display: none; }
+.chat-tool-group .chat-tool-state.error { color: var(--red); }
+.chat-tool-group-body { padding: 4px 8px 8px; }
+.chat-tool-group-body .tool { margin-bottom: 4px; }
 .chat-tool-body {
   padding: 0 12px 12px;
   border-top: 1px solid var(--border-subtle);
@@ -1585,17 +1625,21 @@ function renderSidebar() {
     }
     html += '</div>'
   } else {
+    const collapsiblePhases = new Set(['done', 'reference'])
     let first = true
     for (const ph of phaseOrder) {
       const projs = active.filter(p => p.phase === ph)
       if (!projs.length) continue
+      const collapsible = collapsiblePhases.has(ph)
+      const collapseAttr = collapsible ? ' style="cursor:pointer;user-select:none" onclick="this.nextElementSibling.classList.toggle(\'collapsed\')"' : ''
+      const countHint = collapsible ? ` <span style="opacity:.5">${projs.length}</span>` : ''
       if (first) {
-        html += `<div class="sb-group-label">${phaseLabels[ph] || ph} <span class="sb-group-toggle" onclick="event.stopPropagation();setSidebarSort('recent')" title="Sort by recent">↕</span></div>`
+        html += `<div class="sb-group-label"${collapseAttr}>${phaseLabels[ph] || ph}${countHint} <span class="sb-group-toggle" onclick="event.stopPropagation();setSidebarSort('recent')" title="Sort by recent">↕</span></div>`
         first = false
       } else {
-        html += `<div class="sb-group-label">${phaseLabels[ph] || ph}</div>`
+        html += `<div class="sb-group-label"${collapseAttr}>${phaseLabels[ph] || ph}${countHint}</div>`
       }
-      html += '<div class="sb-projects">'
+      html += `<div class="sb-projects${collapsible ? ' collapsed' : ''}">`
       for (const p of projs) {
         html += `<div class="sb-proj ${p.id === S.projectId ? 'active' : ''}" onclick="goProject(${p.id})">
           <span class="phase-dot ph-${p.phase}"></span>
@@ -1943,6 +1987,62 @@ function renderProject() {
   }
 
   c.innerHTML = html
+  initDragReorder(c)
+}
+
+/* ---- Drag-to-reorder tasks ---- */
+let _dragId = null
+function initDragReorder(container) {
+  container.querySelectorAll('.task-row[draggable="true"]').forEach(row => {
+    row.addEventListener('dragstart', e => {
+      _dragId = +row.dataset.id
+      row.classList.add('dragging')
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', row.dataset.id)
+    })
+    row.addEventListener('dragend', () => {
+      _dragId = null
+      row.classList.remove('dragging')
+      container.querySelectorAll('.drag-over').forEach(r => r.classList.remove('drag-over'))
+    })
+    row.addEventListener('dragover', e => {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      if (+row.dataset.id === _dragId) return
+      container.querySelectorAll('.drag-over').forEach(r => r.classList.remove('drag-over'))
+      row.classList.add('drag-over')
+    })
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('drag-over')
+    })
+    row.addEventListener('drop', async e => {
+      e.preventDefault()
+      row.classList.remove('drag-over')
+      const targetId = +row.dataset.id
+      if (!_dragId || _dragId === targetId) return
+      // Find the spec-body (container) for this row
+      const body = row.closest('.spec-body')
+      if (!body) return
+      const rows = [...body.querySelectorAll('.task-row[draggable="true"]')]
+      const ids = rows.map(r => +r.dataset.id)
+      const fromIdx = ids.indexOf(_dragId)
+      const toIdx = ids.indexOf(targetId)
+      if (fromIdx < 0 || toIdx < 0) return
+      // Reorder: remove from old position, insert before target
+      ids.splice(fromIdx, 1)
+      ids.splice(toIdx > fromIdx ? toIdx - 1 : toIdx, 0, _dragId)
+      // Optimistic DOM reorder
+      const draggedRow = body.querySelector(`.task-row[data-id="${_dragId}"]`)
+      if (draggedRow) body.insertBefore(draggedRow, row)
+      // Persist
+      try {
+        await api('/api/tasks/reorder', { method: 'POST', body: JSON.stringify({ task_ids: ids }) })
+      } catch (err) {
+        toast('Reorder failed')
+        await refreshProject()
+      }
+    })
+  })
 }
 
 function filteredTasks() {
@@ -1959,8 +2059,10 @@ function setFilter(f) {
 function taskRow(t) {
   const done = t.status === 'completed'
   const dc = dueClass(t.due_date, t.status)
+  const draggable = S.view === 'project' && !done
   return `<div class="task-row ${done ? 'completed' : ''} ${t.id === S.selTaskId ? 'selected' : ''}"
-    data-id="${t.id}" onclick="selTask(${t.id})">
+    data-id="${t.id}" ${draggable ? 'draggable="true"' : ''} onclick="selTask(${t.id})">
+    ${draggable ? '<div class="t-drag" onmousedown="event.stopPropagation()">⠿</div>' : ''}
     <div class="t-check ${done ? 'done' : ''}"
       onclick="event.stopPropagation();toggleTask(${t.id},'${t.status}')"></div>
     <div class="t-info">
@@ -2593,6 +2695,14 @@ function updateStreamingAssistant(text) {
   scrollChatToBottom()
 }
 
+function _toolHint(name, input) {
+  if (!input || typeof input !== 'object') return ''
+  const v = input.project_id || input.task_id || input.query || input.name || input.text || input.repo || input.path || input.command || input.server_name || ''
+  if (!v) return ''
+  const s = String(v)
+  return s.length > 40 ? s.slice(0, 40) + '…' : s
+}
+
 function appendToolCard(toolCallId, toolName, toolInput) {
   clearChatEmptyState()
   const row = document.createElement('div')
@@ -2600,9 +2710,11 @@ function appendToolCard(toolCallId, toolName, toolInput) {
   const details = document.createElement('details')
   details.className = 'chat-tool-card'
   details.open = true
+  const hint = _toolHint(toolName, toolInput)
+  const hintHtml = hint ? ` <span class="chat-tool-hint">${esc(hint)}</span>` : ''
   details.innerHTML = `
     <summary>
-      <span class="chat-tool-name">${esc(toolName)}</span>
+      <span class="chat-tool-name">${esc(toolName)}${hintHtml}</span>
       <span class="chat-tool-state">running</span>
     </summary>
     <div class="chat-tool-body">
@@ -2965,6 +3077,35 @@ function finishChatStream(assistantText) {
   } else if (S.chat.currentAssistantEl) {
     S.chat.currentAssistantEl.parentElement.remove()
     S.chat.currentAssistantEl = null
+  }
+
+  // Collapse individual tool cards into a single summary row above the assistant message
+  const chatMsgs = document.getElementById('chat-messages')
+  const toolRows = Array.from(chatMsgs.querySelectorAll('.chat-row.tool'))
+  if (toolRows.length > 0) {
+    const uniqueTools = [...new Set(S.chat.turnTools.map(t => t.name.replace(/^tf_/, '')))]
+    const label = uniqueTools.length <= 3 ? uniqueTools.join(', ') : `${toolRows.length} tools`
+    const groupRow = document.createElement('div')
+    groupRow.className = 'chat-row tool'
+    const groupDetails = document.createElement('details')
+    groupDetails.className = 'chat-tool-group'
+    const hasError = S.chat.turnTools.some(t => t.error)
+    groupDetails.innerHTML = `<summary><span class="chat-tool-name">${esc(label)}</span> <span class="chat-tool-state ${hasError ? 'error' : ''}">${hasError ? 'errors' : 'done'}</span></summary>`
+    const groupBody = document.createElement('div')
+    groupBody.className = 'chat-tool-group-body'
+    toolRows.forEach(tr => {
+      tr.classList.remove('chat-row')
+      groupBody.appendChild(tr)
+    })
+    groupDetails.appendChild(groupBody)
+    groupRow.appendChild(groupDetails)
+    // Insert before the assistant bubble
+    const assistantRow = S.chat.currentAssistantEl ? S.chat.currentAssistantEl.closest('.chat-row') : null
+    if (assistantRow) {
+      chatMsgs.insertBefore(groupRow, assistantRow)
+    } else {
+      chatMsgs.appendChild(groupRow)
+    }
   }
 
   S.chat.messages.push({ role: 'assistant', content: fullContent })

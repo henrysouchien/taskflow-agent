@@ -10,3 +10,4 @@ logs/
 data/taskflow-web.pid
 data/agent_memory.md
 data/repos.json
+data/workflows/

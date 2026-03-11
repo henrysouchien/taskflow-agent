@@ -14,7 +14,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from . import db
+from . import db, workflows
 
 mcp = FastMCP(
     "taskflow",
@@ -28,6 +28,7 @@ mcp = FastMCP(
 db.init_db()
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_VENV_PYTHON = _PROJECT_ROOT / "venv" / "bin" / "python"
 _PID_FILE = _PROJECT_ROOT / "data" / "taskflow-web.pid"
 _LOG_DIR = _PROJECT_ROOT / "logs"
 _LOG_FILE = _LOG_DIR / "web.log"
@@ -659,7 +660,7 @@ def tf_serve_start() -> str:
     log_fh = open(_LOG_FILE, "a")
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "src.web"],
+            [str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable, "-m", "src.web"],
             cwd=str(_PROJECT_ROOT),
             stdout=log_fh,
             stderr=subprocess.STDOUT,
@@ -748,6 +749,39 @@ def tf_repo_status(repo: str = "all", commits: int = 10) -> str:
     if repo == "all":
         return _json({"repos": repos.all_repos_summary()})
     return _json(repos.repo_status(repo, commit_count=commits))
+
+
+@mcp.tool()
+def tf_workflow_list() -> str:
+    """List available workflow templates."""
+    workflow_items = workflows.list_workflows()
+    return _json({"workflows": workflow_items, "count": len(workflow_items)})
+
+
+@mcp.tool()
+def tf_workflow_get(slug: str) -> str:
+    """Read a workflow template by slug."""
+    try:
+        workflow = workflows.get_workflow(slug)
+    except ValueError as exc:
+        return _error(str(exc))
+    except OSError as exc:
+        return _error(f"Could not read workflow '{slug}': {exc}")
+    if workflow is None:
+        return _error(f"Workflow '{slug}' not found")
+    return _json(workflow)
+
+
+@mcp.tool()
+def tf_workflow_save(slug: str, content: str) -> str:
+    """Create or update a workflow template."""
+    try:
+        result = workflows.save_workflow(slug, content)
+    except ValueError as exc:
+        return _error(str(exc))
+    except OSError as exc:
+        return _error(f"Could not write workflow '{slug}': {exc}")
+    return _json(result)
 
 
 def main():
