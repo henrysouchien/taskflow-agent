@@ -1218,6 +1218,22 @@ button { cursor: pointer; }
   white-space: pre-wrap;
   word-break: break-word;
 }
+.chat-sub-progress {
+  padding: 4px 12px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.8;
+  color: var(--text-muted);
+}
+.chat-sub-progress-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.chat-sub-progress-line .marker { color: var(--accent); }
+.chat-sub-progress-line .marker.done { color: var(--green); }
+.chat-sub-progress-line .marker.err { color: var(--red); }
+.chat-sub-progress-line .dur { opacity: 0.6; }
 
 .chat-compose {
   border-top: 1px solid var(--border-subtle);
@@ -2744,6 +2760,102 @@ function completeToolCard(toolCallId, toolName, result, error) {
   scrollChatToBottom()
 }
 
+function _ensureSubProgressContainer(card) {
+  let container = card.querySelector('.chat-sub-progress')
+  if (container) return container
+  container = document.createElement('div')
+  container.className = 'chat-sub-progress'
+  const bodyEl = card.querySelector('.chat-tool-body')
+  if (bodyEl) {
+    card.insertBefore(container, bodyEl)
+  } else {
+    card.appendChild(container)
+  }
+  return container
+}
+
+function _findSubProgressLine(container, subToolCallId) {
+  if (!subToolCallId) return null
+  return Array.from(container.querySelectorAll('.chat-sub-progress-line'))
+    .find(line => line.dataset.subCallId === subToolCallId) || null
+}
+
+function _formatSubProgressDuration(durationMs) {
+  const ms = Number(durationMs)
+  if (!Number.isFinite(ms) || ms < 0) return ''
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+function _renderSubProgressLine(line, markerText, markerClass, text, durationText = '') {
+  line.textContent = ''
+
+  const markerEl = document.createElement('span')
+  markerEl.className = markerClass
+  markerEl.textContent = markerText
+  line.appendChild(markerEl)
+
+  const textEl = document.createElement('span')
+  textEl.textContent = text || 'tool'
+  line.appendChild(textEl)
+
+  if (durationText) {
+    const durationEl = document.createElement('span')
+    durationEl.className = 'dur'
+    durationEl.textContent = durationText
+    line.appendChild(durationEl)
+  }
+}
+
+function updateSubAgentProgress(parentToolCallId, subEvent, toolName, subToolCallId, durationMs, error, errorMessage) {
+  const card = S.chat.toolCards.get(parentToolCallId)
+  if (!card) return
+
+  const container = _ensureSubProgressContainer(card)
+  const label = toolName || 'tool'
+
+  if (subEvent === 'tool_start') {
+    if (!subToolCallId) return
+    let line = _findSubProgressLine(container, subToolCallId)
+    if (!line) {
+      line = document.createElement('div')
+      line.className = 'chat-sub-progress-line'
+      line.dataset.subCallId = subToolCallId
+      container.appendChild(line)
+    }
+    _renderSubProgressLine(line, '▸', 'marker', label)
+    scrollChatToBottom()
+    return
+  }
+
+  if (subEvent === 'tool_done') {
+    if (!subToolCallId) return
+    let line = _findSubProgressLine(container, subToolCallId)
+    if (!line) {
+      line = document.createElement('div')
+      line.className = 'chat-sub-progress-line'
+      line.dataset.subCallId = subToolCallId
+      container.appendChild(line)
+    }
+    _renderSubProgressLine(
+      line,
+      error ? '✗' : '✓',
+      error ? 'marker err' : 'marker done',
+      label,
+      _formatSubProgressDuration(durationMs),
+    )
+    scrollChatToBottom()
+    return
+  }
+
+  if (subEvent === 'error') {
+    const line = document.createElement('div')
+    line.className = 'chat-sub-progress-line'
+    _renderSubProgressLine(line, '✗', 'marker err', errorMessage || 'Sub-agent error')
+    container.appendChild(line)
+    scrollChatToBottom()
+  }
+}
+
 function formatToolPayload(value) {
   if (value == null) return '{}'
   let text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
@@ -3037,6 +3149,19 @@ async function handleChatEvent(event) {
       entry.result = event.result
       entry.error = event.error
     }
+    return false
+  }
+
+  if (event.type === 'sub_agent_progress') {
+    updateSubAgentProgress(
+      event.parent_tool_call_id,
+      event.sub_event,
+      event.tool_name,
+      event.sub_tool_call_id,
+      event.duration_ms,
+      event.error,
+      event.error_message,
+    )
     return false
   }
 

@@ -1241,7 +1241,6 @@ MUTATING_TOOL_NAMES = {
 _SUB_AGENT_EXCLUDED_TOOLS: set[str] = {
     "run_agent",
     "run_shell",
-    "load_tools",
     "tf_memory_read",
     "tf_memory_update",
 } | MUTATING_TOOL_NAMES
@@ -1261,7 +1260,7 @@ _SUB_AGENT_MAX_TURNS = 15
 _SUB_AGENT_TIMEOUT = int(os.getenv("SUB_AGENT_TIMEOUT", "300"))
 _SUB_AGENT_CLIENT_TIMEOUT = 90
 _SUB_AGENT_MAX_TOKENS = 32_000
-_SUB_AGENT_DEFAULT_MODEL = "claude-sonnet-4-6"
+_SUB_AGENT_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 mcp_manager = McpClientManager(
     allowed_servers=None,
@@ -1819,6 +1818,7 @@ def make_run_agent_handler(
     runner_ref: list[Any],
     local_tool_handlers: dict[str, Any],
     mcp_manager: McpClientManager,
+    event_log: EventLog,
 ):
     async def _handle_run_agent(
         tool_input: dict,
@@ -1834,7 +1834,7 @@ def make_run_agent_handler(
             return None, {"code": "invalid_input", "message": "task is required"}
 
         raw_model = tool_input.get("model")
-        allowed = {"claude-sonnet-4-6", "claude-opus-4-6"}
+        allowed = {"claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-6"}
         if raw_model is not None and raw_model not in allowed:
             return None, {"code": "invalid_input", "message": f"Invalid model: {raw_model}"}
 
@@ -1855,6 +1855,43 @@ def make_run_agent_handler(
             needs_approval=lambda _: False,
         )
 
+        def on_sub_event(event: dict[str, Any], session_id: str) -> None:
+            del session_id
+            event_type = event.get("type")
+            if event_type == "tool_call_start":
+                event_log.append(
+                    {
+                        "type": "sub_agent_progress",
+                        "call_index": call_index,
+                        "sub_event": "tool_start",
+                        "tool_name": event.get("tool_name", ""),
+                        "sub_tool_call_id": event.get("tool_call_id", ""),
+                    }
+                )
+                return
+            if event_type == "tool_call_complete":
+                event_log.append(
+                    {
+                        "type": "sub_agent_progress",
+                        "call_index": call_index,
+                        "sub_event": "tool_done",
+                        "tool_name": event.get("tool_name", ""),
+                        "sub_tool_call_id": event.get("tool_call_id", ""),
+                        "duration_ms": event.get("duration_ms"),
+                        "error": bool(event.get("error")),
+                    }
+                )
+                return
+            if event_type == "error":
+                event_log.append(
+                    {
+                        "type": "sub_agent_progress",
+                        "call_index": call_index,
+                        "sub_event": "error",
+                        "error_message": str(event.get("error", "Sub-agent error")),
+                    }
+                )
+
         result, error = await runner.spawn_sub_agent(
             task,
             model=effective_model,
@@ -1866,6 +1903,7 @@ def make_run_agent_handler(
             client_timeout=_SUB_AGENT_CLIENT_TIMEOUT,
             max_tokens=_SUB_AGENT_MAX_TOKENS,
             call_index=call_index,
+            on_sub_event=on_sub_event,
         )
         return result, error
 
@@ -2248,6 +2286,7 @@ async def sse_generator(
     runner_task: asyncio.Task[None],
     request_id: str,
 ):
+    run_agent_map: dict[int, str] = {}
     tool_inputs: dict[str, dict[str, Any]] = {}
     tool_calls: dict[str, dict[str, Any]] = {}
     turn_tools: list[dict[str, Any]] = []
@@ -2292,6 +2331,10 @@ async def sse_generator(
                 }
                 tool_calls[tool_call_id] = tool_entry
                 turn_tools.append(tool_entry)
+                if tool_name == "run_agent":
+                    call_index = event.get("call_index")
+                    if call_index is not None:
+                        run_agent_map[call_index] = tool_call_id
                 yield _sse(
                     {
                         "type": "tool_call_start",
@@ -2332,6 +2375,24 @@ async def sse_generator(
                 mutation = _build_mutation_event(tool_name, tool_inputs.get(tool_call_id, {}), result)
                 if mutation:
                     pending_mutations.append(mutation)
+                continue
+
+            if event_type == "sub_agent_progress":
+                call_index = event.get("call_index")
+                parent_tool_call_id = run_agent_map.get(call_index) if call_index is not None else None
+                if parent_tool_call_id:
+                    yield _sse(
+                        {
+                            "type": "sub_agent_progress",
+                            "parent_tool_call_id": parent_tool_call_id,
+                            "sub_event": event.get("sub_event"),
+                            "tool_name": event.get("tool_name", ""),
+                            "sub_tool_call_id": event.get("sub_tool_call_id", ""),
+                            "duration_ms": event.get("duration_ms"),
+                            "error": event.get("error"),
+                            "error_message": event.get("error_message"),
+                        }
+                    )
                 continue
 
             if event_type == "stream_complete":
@@ -2938,6 +2999,7 @@ async def chat(body: ChatRequest, request: Request):
             runner_ref,
             request_handlers,
             mcp_manager,
+            event_log,
         )
         dispatcher = ToolDispatcher(
             mcp_client=mcp_manager,
