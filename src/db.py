@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -138,6 +139,17 @@ CREATE TABLE IF NOT EXISTS daily_focus (
 );
 CREATE INDEX IF NOT EXISTS idx_daily_focus_date ON daily_focus(focus_date);
 CREATE INDEX IF NOT EXISTS idx_daily_focus_task ON daily_focus(task_id);
+
+CREATE TABLE IF NOT EXISTS deleted_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('task', 'section', 'goal')),
+    entity_id INTEGER NOT NULL,
+    entity_name TEXT NOT NULL DEFAULT '',
+    snapshot TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_deleted_items_deleted_at
+    ON deleted_items(deleted_at DESC);
 """
 
 
@@ -576,12 +588,21 @@ def move_section(conn: sqlite3.Connection, section_id: int, new_position: int) -
 
 def delete_section(conn: sqlite3.Connection, section_id: int) -> bool:
     """Delete a section. Reassigns its tasks to section_id=NULL (Ungrouped)."""
-    conn.execute(
-        "UPDATE tasks SET section_id = NULL, last_modified = datetime('now') WHERE section_id = ?",
-        (section_id,),
-    )
-    cur = conn.execute("DELETE FROM sections WHERE id = ?", (section_id,))
-    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        snap = _snapshot_section(conn, section_id)
+        if snap:
+            _save_deleted_snapshot(conn, "section", section_id, snap["section"]["name"], snap)
+        conn.execute(
+            "UPDATE tasks SET section_id = NULL, last_modified = datetime('now') WHERE section_id = ?",
+            (section_id,),
+        )
+        cur = conn.execute("DELETE FROM sections WHERE id = ?", (section_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    _purge_deleted_items(conn)
     return cur.rowcount > 0
 
 
@@ -760,12 +781,20 @@ def move_task(conn: sqlite3.Connection, task_id: int, project_id: int | None = N
 
 
 def delete_task(conn: sqlite3.Connection, task_id: int) -> bool:
-    # Delete subtasks first
-    conn.execute("DELETE FROM task_tags WHERE task_id IN (SELECT id FROM tasks WHERE parent_task_id = ?)", (task_id,))
-    conn.execute("DELETE FROM tasks WHERE parent_task_id = ?", (task_id,))
-    conn.execute("DELETE FROM task_tags WHERE task_id = ?", (task_id,))
-    cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        snap = _snapshot_task(conn, task_id)
+        if snap:
+            _save_deleted_snapshot(conn, "task", task_id, snap["task"]["name"], snap)
+        conn.execute("DELETE FROM task_tags WHERE task_id IN (SELECT id FROM tasks WHERE parent_task_id = ?)", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE parent_task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_tags WHERE task_id = ?", (task_id,))
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    _purge_deleted_items(conn)
     return cur.rowcount > 0
 
 
@@ -950,9 +979,348 @@ def reopen_goal(conn: sqlite3.Connection, goal_id: int) -> bool:
 
 
 def delete_goal(conn: sqlite3.Connection, goal_id: int) -> bool:
-    cur = conn.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
-    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        snap = _snapshot_goal(conn, goal_id)
+        if snap:
+            _save_deleted_snapshot(conn, "goal", goal_id, snap["goal"]["text"], snap)
+        cur = conn.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    _purge_deleted_items(conn)
     return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Deleted Items (Undo Support)
+# ---------------------------------------------------------------------------
+
+def _snapshot_task(conn: sqlite3.Connection, task_id: int) -> dict[str, Any] | None:
+    """Build a restorable snapshot for a task + subtasks + tags + focus entries."""
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        return None
+    task = dict(row)
+    tags = [
+        r["name"]
+        for r in conn.execute(
+            """
+            SELECT tg.name
+            FROM tags tg
+            JOIN task_tags tt ON tt.tag_id = tg.id
+            WHERE tt.task_id = ?
+            """,
+            (task_id,),
+        ).fetchall()
+    ]
+    focus_entries = [
+        {"focus_date": r["focus_date"], "position": r["position"], "added_at": r["added_at"]}
+        for r in conn.execute(
+            "SELECT focus_date, position, added_at FROM daily_focus WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+    ]
+    subtasks = []
+    for sub in conn.execute("SELECT * FROM tasks WHERE parent_task_id = ?", (task_id,)).fetchall():
+        sub_tags = [
+            r["name"]
+            for r in conn.execute(
+                """
+                SELECT tg.name
+                FROM tags tg
+                JOIN task_tags tt ON tt.tag_id = tg.id
+                WHERE tt.task_id = ?
+                """,
+                (sub["id"],),
+            ).fetchall()
+        ]
+        sub_focus = [
+            {"focus_date": r["focus_date"], "position": r["position"], "added_at": r["added_at"]}
+            for r in conn.execute(
+                "SELECT focus_date, position, added_at FROM daily_focus WHERE task_id = ?",
+                (sub["id"],),
+            ).fetchall()
+        ]
+        subtasks.append({"task": dict(sub), "tags": sub_tags, "focus_entries": sub_focus})
+    return {"task": task, "tags": tags, "focus_entries": focus_entries, "subtasks": subtasks}
+
+
+def _snapshot_section(conn: sqlite3.Connection, section_id: int) -> dict[str, Any] | None:
+    """Build a restorable snapshot for a section + affected tasks with their last_modified."""
+    row = conn.execute("SELECT * FROM sections WHERE id = ?", (section_id,)).fetchone()
+    if not row:
+        return None
+    tasks = [
+        {"id": r["id"], "last_modified": r["last_modified"]}
+        for r in conn.execute(
+            "SELECT id, last_modified FROM tasks WHERE section_id = ?",
+            (section_id,),
+        ).fetchall()
+    ]
+    return {"section": dict(row), "tasks": tasks}
+
+
+def _snapshot_goal(conn: sqlite3.Connection, goal_id: int) -> dict[str, Any] | None:
+    """Build a restorable snapshot for a goal."""
+    row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+    if not row:
+        return None
+    return {"goal": dict(row)}
+
+
+def _save_deleted_snapshot(
+    conn: sqlite3.Connection,
+    entity_type: str,
+    entity_id: int,
+    entity_name: str,
+    snapshot: dict[str, Any],
+) -> None:
+    """Save a snapshot before deletion. Caller commits as part of the delete transaction."""
+    conn.execute(
+        "INSERT INTO deleted_items (entity_type, entity_id, entity_name, snapshot) VALUES (?, ?, ?, ?)",
+        (entity_type, entity_id, entity_name, json.dumps(snapshot)),
+    )
+
+
+def list_deleted_items(
+    conn: sqlite3.Connection,
+    entity_type: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """List recent deleted items, optionally filtered by type."""
+    if entity_type:
+        rows = conn.execute(
+            """
+            SELECT id, entity_type, entity_id, entity_name, deleted_at
+            FROM deleted_items
+            WHERE entity_type = ?
+            ORDER BY deleted_at DESC
+            LIMIT ?
+            """,
+            (entity_type, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, entity_type, entity_id, entity_name, deleted_at
+            FROM deleted_items
+            ORDER BY deleted_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def restore_deleted_item(conn: sqlite3.Connection, deleted_item_id: int) -> tuple[str, int] | None:
+    """Restore a deleted item from its snapshot."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT * FROM deleted_items WHERE id = ?",
+            (deleted_item_id,),
+        ).fetchone()
+        if not row:
+            conn.rollback()
+            return None
+        snap = json.loads(row["snapshot"])
+        entity_type = row["entity_type"]
+
+        if entity_type == "task":
+            _restore_task(conn, snap)
+        elif entity_type == "section":
+            _restore_section(conn, snap)
+        elif entity_type == "goal":
+            _restore_goal(conn, snap)
+
+        conn.execute("DELETE FROM deleted_items WHERE id = ?", (deleted_item_id,))
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise ValueError(f"Cannot restore: {exc}") from exc
+    except Exception:
+        conn.rollback()
+        raise
+
+    return entity_type, row["entity_id"]
+
+
+def _restore_task(conn: sqlite3.Connection, snap: dict[str, Any]) -> None:
+    """Re-insert a task + subtasks + tags + focus entries from snapshot."""
+    t = snap["task"]
+    proj = conn.execute("SELECT id FROM projects WHERE id = ?", (t["project_id"],)).fetchone()
+    if not proj:
+        raise sqlite3.IntegrityError(f"Parent project {t['project_id']} no longer exists")
+
+    section_id = t["section_id"]
+    if section_id is not None:
+        sec_row = conn.execute(
+            "SELECT id, project_id FROM sections WHERE id = ?",
+            (section_id,),
+        ).fetchone()
+        if not sec_row or sec_row["project_id"] != t["project_id"]:
+            section_id = None
+
+    parent_task_id = t["parent_task_id"]
+    if parent_task_id is not None:
+        parent_row = conn.execute(
+            "SELECT id, project_id FROM tasks WHERE id = ?",
+            (parent_task_id,),
+        ).fetchone()
+        if not parent_row:
+            raise sqlite3.IntegrityError(
+                f"Parent task {parent_task_id} no longer exists - restore the parent task first"
+            )
+        if parent_row["project_id"] != t["project_id"]:
+            raise sqlite3.IntegrityError(
+                f"Parent task {parent_task_id} is now in project {parent_row['project_id']}, "
+                f"but subtask belongs to project {t['project_id']} - move parent back first"
+            )
+
+    conn.execute(
+        """
+        INSERT INTO tasks (
+            id,
+            project_id,
+            section_id,
+            parent_task_id,
+            name,
+            notes,
+            assignee,
+            status,
+            start_date,
+            due_date,
+            created_at,
+            completed_at,
+            last_modified,
+            position
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            t["id"],
+            t["project_id"],
+            section_id,
+            parent_task_id,
+            t["name"],
+            t["notes"],
+            t["assignee"],
+            t["status"],
+            t["start_date"],
+            t["due_date"],
+            t["created_at"],
+            t["completed_at"],
+            t["last_modified"],
+            t["position"],
+        ),
+    )
+    if snap.get("tags"):
+        _set_tags(conn, t["id"], snap["tags"])
+    for fe in snap.get("focus_entries", []):
+        conn.execute(
+            "INSERT OR IGNORE INTO daily_focus (task_id, focus_date, position, added_at) VALUES (?, ?, ?, ?)",
+            (t["id"], fe["focus_date"], fe["position"], fe["added_at"]),
+        )
+
+    for sub_snap in snap.get("subtasks", []):
+        st = sub_snap["task"]
+        sub_project_id = t["project_id"]
+        sub_section_id = st["section_id"]
+        if sub_section_id is not None:
+            sec_row = conn.execute(
+                "SELECT id, project_id FROM sections WHERE id = ?",
+                (sub_section_id,),
+            ).fetchone()
+            if not sec_row or sec_row["project_id"] != sub_project_id:
+                sub_section_id = None
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id,
+                project_id,
+                section_id,
+                parent_task_id,
+                name,
+                notes,
+                assignee,
+                status,
+                start_date,
+                due_date,
+                created_at,
+                completed_at,
+                last_modified,
+                position
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                st["id"],
+                sub_project_id,
+                sub_section_id,
+                st["parent_task_id"],
+                st["name"],
+                st["notes"],
+                st["assignee"],
+                st["status"],
+                st["start_date"],
+                st["due_date"],
+                st["created_at"],
+                st["completed_at"],
+                st["last_modified"],
+                st["position"],
+            ),
+        )
+        if sub_snap.get("tags"):
+            _set_tags(conn, st["id"], sub_snap["tags"])
+        for fe in sub_snap.get("focus_entries", []):
+            conn.execute(
+                "INSERT OR IGNORE INTO daily_focus (task_id, focus_date, position, added_at) VALUES (?, ?, ?, ?)",
+                (st["id"], fe["focus_date"], fe["position"], fe["added_at"]),
+            )
+
+
+def _restore_section(conn: sqlite3.Connection, snap: dict[str, Any]) -> None:
+    """Re-insert a section and reassign tasks still left ungrouped in the same project."""
+    s = snap["section"]
+    proj = conn.execute("SELECT id FROM projects WHERE id = ?", (s["project_id"],)).fetchone()
+    if not proj:
+        raise sqlite3.IntegrityError(f"Parent project {s['project_id']} no longer exists")
+    conn.execute(
+        "INSERT INTO sections (id, project_id, name, position, plan) VALUES (?, ?, ?, ?, ?)",
+        (s["id"], s["project_id"], s["name"], s["position"], s.get("plan", "")),
+    )
+    for task_info in snap.get("tasks", []):
+        conn.execute(
+            """
+            UPDATE tasks
+            SET section_id = ?, last_modified = datetime('now')
+            WHERE id = ? AND section_id IS NULL AND project_id = ?
+            """,
+            (s["id"], task_info["id"], s["project_id"]),
+        )
+
+
+def _restore_goal(conn: sqlite3.Connection, snap: dict[str, Any]) -> None:
+    """Re-insert a goal from snapshot."""
+    g = snap["goal"]
+    conn.execute(
+        "INSERT INTO goals (id, text, timeframe, active, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (g["id"], g["text"], g["timeframe"], g["active"], g["created_at"], g["completed_at"]),
+    )
+
+
+def _purge_deleted_items(conn: sqlite3.Connection, older_than_hours: int = 24) -> None:
+    """Best-effort cleanup for expired deleted-item snapshots."""
+    try:
+        conn.execute(
+            "DELETE FROM deleted_items WHERE deleted_at < datetime('now', ?)",
+            (f"-{older_than_hours} hours",),
+        )
+        conn.commit()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

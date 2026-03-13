@@ -28,6 +28,17 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("taskflow")
+log.setLevel(logging.DEBUG)
+log.propagate = False
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(getattr(logging, _LOG_LEVEL, logging.INFO))
+_console_handler.setFormatter(
+    logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
+)
+log.addHandler(_console_handler)
 
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -123,6 +134,30 @@ _workspace_summary_cache = {
     "text": "",
     "built_at": 0.0,
 }
+
+_event_bus_clients: set[asyncio.Queue] = set()
+
+
+async def _broadcast(event: dict[str, Any]) -> None:
+    for q in list(_event_bus_clients):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            _event_bus_clients.discard(q)
+
+
+_event_loop: asyncio.AbstractEventLoop | None = None
+
+
+@app.on_event("startup")
+async def _capture_loop():
+    global _event_loop
+    _event_loop = asyncio.get_running_loop()
+
+
+def _broadcast_sync(event: dict[str, Any]) -> None:
+    if _event_loop and _event_loop.is_running():
+        asyncio.run_coroutine_threadsafe(_broadcast(event), _event_loop)
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +258,31 @@ class ChatRequest(BaseModel):
 
 def _conn():
     return db.get_conn()
+
+
+_TASK_LIST_FIELDS = {"id", "name", "status", "due_date", "project_id", "section_name", "project_name"}
+
+
+def _slim_task(task: dict) -> dict:
+    return {k: v for k, v in task.items() if k in _TASK_LIST_FIELDS}
+
+
+def _slim_search_result(task: dict) -> dict:
+    result = _slim_task(task)
+    notes = task.get("notes") or ""
+    if notes:
+        result["notes"] = notes[:200] + ("..." if len(notes) > 200 else "")
+    return result
+
+
+_PROJECT_LIST_FIELDS = {"id", "name", "icon", "phase", "open_count", "task_count", "last_activity"}
+
+
+def _slim_project(project: dict) -> dict:
+    base = {k: v for k, v in project.items() if k in _PROJECT_LIST_FIELDS}
+    if "tasks" in project:
+        base["tasks"] = [_slim_task(task) for task in project["tasks"]]
+    return base
 
 
 COMPACT_TOKEN_THRESHOLD = 60_000
@@ -447,6 +507,7 @@ def _build_workspace_summary() -> str:
     cached_text = _workspace_summary_cache["text"]
     cached_at = float(_workspace_summary_cache["built_at"])
     if cached_text and (now - cached_at) < WORKSPACE_SUMMARY_TTL_SECONDS:
+        log.debug("workspace_cache | hit | age=%.1fs", now - cached_at)
         return cached_text
 
     conn = _conn()
@@ -523,6 +584,7 @@ def _build_workspace_summary() -> str:
         lines.append(f"- Connected repos ({len(rnames)}): {', '.join(rnames)}")
 
     summary = _trim_for_token_budget("\n".join(lines), WORKSPACE_SUMMARY_TOKEN_BUDGET)
+    log.debug("workspace_cache | miss | tokens=%d", len(summary) // 4)
     _workspace_summary_cache["text"] = summary
     _workspace_summary_cache["built_at"] = now
     return summary
@@ -684,113 +746,77 @@ def _build_view_context(context: ChatContext) -> str:
     return f"CURRENT VIEW:\n- Unsupported view: {context.view}"
 
 
-def build_taskflow_prompt(context: ChatContext) -> str:
-    workspace_summary = _build_workspace_summary()
-    memory_block = _build_memory_context()
-    view_context = _build_view_context(context)
-    deferred_tools = _configured_server_names()
-    memory_section = f"\n\n{memory_block}" if memory_block else ""
-    prompt = f"""
+_SECTION_ROLE = """
 You are a project collaborator in Taskflow, the user's personal project management system.
 
 YOUR ROLE:
 - Help think through project plans, not just manage tasks.
 - Act when you can via tools instead of stopping at suggestions.
 - Use the workspace context below to stay oriented across all projects.
-
-TASKFLOW PHILOSOPHY:
-Taskflow is "the repo for non-code life" — it gives non-code work the same forward motion
-that code projects get naturally: everything in one place, AI collaborator, clear "what's next."
-
-Structure follows three layers:
-- Project plan = the orientation ("what are we doing and why") — freeform markdown
-- Sections = PHASES IN A SEQUENCE, not categories. They answer "what order do I do this in."
-  Good: "Phase 1: Schema", "Phase 2: API". Bad: "API", "Frontend", "Database" (that's just filing).
-  Do NOT default to grouping by category — always think about sequencing and what comes next.
-- Tasks = atomic action items extracted from plans
-
-Key principles:
-- Plans before tasks — think first, structure second, execute third. Don't jump to creating tasks.
-- Goals set direction — concrete targets (not vague aspirations) that drive daily focus choices.
-- Daily planning = prioritization + scoping against time. What's highest leverage? What unblocks things?
-  How much time is available? What fits, what gets cut? Rough-estimate in conversation, not schema fields.
-- Collaborator, not task bot — read the plan, understand context, suggest and act, don't just CRUD.
-- Connected — you can reach into Roam, Drive, Sheets, Gmail, etc. to do real work, not just manage tasks.
-- Taskflow is for projects with forward motion. Admin tasks, routines, and errands stay in Roam.
-
-MEMORY MANAGEMENT:
-Use tf_memory_read / tf_memory_update to maintain persistent context across sessions.
-
-How to use:
-- Read first, then update — never blind-overwrite
-- Organize by topic (sections with ## headers), not chronologically
-- Keep it concise — this is injected into every session's context
-
-What to save:
-- User preferences (workflow, communication style, tool choices)
-- Project conventions and architectural decisions
-- Cross-project references and relationships
-- Recurring patterns confirmed across multiple sessions
-- Key contacts, accounts, or system details referenced often
-
-What NOT to save:
-- Current task details or in-progress work (that's in the task itself)
-- Session-specific context (what you just discussed)
-- Anything already in CLAUDE.md or the codebase
-- Speculative conclusions from a single interaction
-- Verbose notes — summarize, don't transcribe
-
-If the conversation is getting long, proactively save important context to memory before it's lost.
-
-{workspace_summary}
-{memory_section}
-
-{view_context}
-
-AVAILABLE TOOLS:
-
-Core (always loaded):
-- `tf_*` tools — manage Taskflow projects, sections, tasks, search, and workspace views.
-- `tf_today` / `tf_focus` / `tf_unfocus` / `tf_move_focus` — daily focus list management.
-- `tf_create_goal` / `tf_update_goal` / `tf_goal_list` / `tf_goal_complete` / `tf_goal_reopen` / `tf_goal_remove` — goal management.
-- `tf_workflow_list` / `tf_workflow_get` / `tf_workflow_save` — reusable project templates.
-- `read_file` / `list_dir` / `run_shell` — read files, browse directories, run shell commands (git, grep, etc.).
-- `notes_search` / `notes_read` — search and read Apple Notes (the user's phone-accessible capture tool).
-- `tf_repo_list` / `tf_repo_status` — check git status, recent commits, and open TODOs across connected repositories.
-
-Deferred MCP servers (call `load_tools` with server_name first):
-- `roam-research` — Roam Research graph: daily notes, page search, block-level content. the user's primary capture/thinking tool.
-- `drive-mcp` — Google Drive: search, list, read documents and files. Project plans and docs live here.
-- `gsheets-mcp` — Google Sheets: read/write spreadsheet data, formulas, tracking sheets.
-- `gmail-mcp` — Gmail: search and read emails. Useful for project-related correspondence.
-- `notify` — Send notifications via Telegram or iMessage.
-- Other servers: {', '.join(s for s in deferred_tools if s not in ('roam-research', 'drive-mcp', 'gsheets-mcp', 'gmail-mcp', 'notify'))}
-
-Sub-agent delegation:
-- You have a `run_agent` tool that spawns a focused sub-agent with its own context window.
-- Use it for intensive work that would bloat this conversation: code exploration, audits, file analysis, searching through notes or Roam pages, or research tasks that require many tool calls.
-- The sub-agent is read-only. It cannot create, update, or delete tasks or projects. You handle all mutations based on its findings.
-- Write detailed, specific instructions in the `task` field. The sub-agent has access to `read_file`, `list_dir`, git repo tools, read-only task tools, Apple Notes, and any MCP servers you've already loaded via `load_tools`. It does NOT have `run_shell`.
-- If you need the sub-agent to access an MCP server such as Roam, call `load_tools` first, then spawn the agent.
-
-BEHAVIORAL GUIDELINES:
-- When the user is looking at a project, treat that project as the default context.
-- Reference project plans when suggesting next steps.
-- After modifying tasks or projects, briefly confirm what you changed.
-- For planning-heavy requests, improve the plan markdown first, then extract tasks.
-- When the user mentions notes or ideas they captured, check Apple Notes or Roam.
-- When discussing code projects or repo work, use `tf_repo_status` to check current state before making recommendations.
-- When the user wants to start a repeatable project type (video, thesis, blog post), check `tf_workflow_list` first. If a matching workflow exists, read it with `tf_workflow_get` and propose using it to scaffold the project. Wait for user confirmation before creating. Customize the plan from context; workflows are starting points, not rigid scripts.
-- When a project reveals a repeatable process, suggest saving it as a workflow for next time.
-- Workflows live in `data/workflows/` as markdown files. The user can also edit them directly.
-- Load deferred MCP servers proactively when the conversation clearly needs them.
-- Daily planning:
-  When the user asks what to focus on today, or the Today view is empty: read goals first, survey active projects (in phase sequence), consider carry-forward items, ask about time constraints ("how much time do you have today?"), then propose 3-5 high-leverage tasks with reasons. Focus on what moves the needle most and what unblocks other work. Rough-estimate task duration in conversation to help scope. Iterate with the user, then pin the agreed tasks with `tf_focus`.
-- Prioritization heuristics:
-  Unblockers beat isolated work, goal-aligned tasks beat dormant projects, sequential dependencies matter (what's blocking the next phase?), quick wins are useful early, and focus lists should stay short. Be ruthless about cutting — if it doesn't fit the time available, defer it.
-- When structuring projects, organize sections as phases/sequence (what to do first, second, third), NOT by category (API, Frontend, Database). Sequencing tells you what's next; categories are just filing.
 """.strip()
-    return _trim_for_token_budget(prompt, PROMPT_TOKEN_BUDGET)
+
+_SECTION_STRUCTURE = """
+TASKFLOW STRUCTURE:
+- Project plan — freeform markdown: what we're doing and why. Plans come first; tasks are extracted from plans.
+- Sections — phases in sequence (not categories). They define what order work happens in.
+- Tasks — atomic action items within a section.
+- Goals — concrete targets that drive daily focus choices.
+""".strip()
+
+_SECTION_MEMORY = """
+MEMORY:
+Use tf_memory_read / tf_memory_update to persist useful context across sessions.
+Read first, then update. Keep it concise — it's injected into every session.
+""".strip()
+
+
+def _section_deferred_tools() -> str:
+    known = {
+        "roam-research": "Roam Research: the user's capture/thinking tool.",
+        "drive-mcp": "Google Drive: docs, plans, files.",
+        "gsheets-mcp": "Google Sheets.",
+        "gmail-mcp": "Gmail.",
+        "notify": "Telegram / iMessage notifications.",
+    }
+    deferred = _configured_server_names()
+    lines = ["DEFERRED MCP SERVERS (call load_tools with server_name first):"]
+    for name in deferred:
+        if name in known:
+            lines.append(f"- {name} — {known[name]}")
+        else:
+            lines.append(f"- {name}")
+    if not deferred:
+        lines.append("- (none configured)")
+    return "\n".join(lines)
+
+
+def build_taskflow_prompt(context: ChatContext) -> str:
+    sections: list[tuple[str, str]] = [
+        ("role", _SECTION_ROLE),
+        ("structure", _SECTION_STRUCTURE),
+        ("memory", _SECTION_MEMORY),
+        ("workspace", _build_workspace_summary()),
+    ]
+    memory_block = _build_memory_context()
+    if memory_block:
+        sections.append(("agent_memory", memory_block))
+    sections.extend(
+        [
+            ("view", _build_view_context(context)),
+            ("deferred_tools", _section_deferred_tools()),
+        ]
+    )
+    prompt = "\n\n".join(text for _, text in sections)
+    final = _trim_for_token_budget(prompt, PROMPT_TOKEN_BUDGET)
+    section_parts = " ".join(f"{name}={len(text) // 4}" for name, text in sections)
+    log.info(
+        "prompt_built | %s | raw=%d final=%d trimmed=%d tokens",
+        section_parts,
+        len(prompt) // 4,
+        len(final) // 4,
+        (len(prompt) - len(final)) // 4,
+    )
+    return final
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +826,7 @@ BEHAVIORAL GUIDELINES:
 TF_TOOL_DEFINITIONS = [
     {
         "name": "tf_list_projects",
-        "description": "List active projects with task counts (backlog excluded unless phase is passed).",
+        "description": "List projects (summary: id, name, phase, counts). Use tf_get_project for full plan.",
         "input_schema": _schema(
             {
                 "phase": {
@@ -812,7 +838,7 @@ TF_TOOL_DEFINITIONS = [
     },
     {
         "name": "tf_get_project",
-        "description": "Get project details with sections and top-level tasks.",
+        "description": "Get full project details with sections and slim top-level tasks. Use tf_get_task for task detail.",
         "input_schema": _schema({"project_id": {"type": "integer"}}, ["project_id"]),
     },
     {
@@ -895,7 +921,7 @@ TF_TOOL_DEFINITIONS = [
     },
     {
         "name": "tf_list_tasks",
-        "description": "List tasks with optional filters. Only returns top-level tasks.",
+        "description": "List top-level tasks (summary: id, name, status, due_date, project context). Use tf_get_task for notes and subtasks.",
         "input_schema": _schema(
             {
                 "project_id": {"type": "integer"},
@@ -973,7 +999,7 @@ TF_TOOL_DEFINITIONS = [
     },
     {
         "name": "tf_search",
-        "description": "Full-text search across task names and notes.",
+        "description": "Search tasks by name/notes (summary + notes excerpt). Use tf_get_task for full detail.",
         "input_schema": _schema(
             {
                 "query": {"type": "string"},
@@ -984,22 +1010,22 @@ TF_TOOL_DEFINITIONS = [
     },
     {
         "name": "tf_backlog",
-        "description": "List open top-level tasks in the backlog project.",
+        "description": "List backlog tasks (summary: id, name, status, due_date, project context). Use tf_get_task for full detail.",
         "input_schema": _schema({}),
     },
     {
         "name": "tf_active",
-        "description": "List active projects with their next open tasks and backlog count.",
+        "description": "List active projects (summary fields) with slim next tasks and backlog count. Use tf_get_project/tf_get_task for full detail.",
         "input_schema": _schema({}),
     },
     {
         "name": "tf_due_soon",
-        "description": "List open tasks due within N days from today.",
+        "description": "List tasks due within N days (summary: id, name, status, due_date, project context). Use tf_get_task for full detail.",
         "input_schema": _schema({"days": {"type": "integer", "minimum": 1, "maximum": 365}}),
     },
     {
         "name": "tf_overdue",
-        "description": "List all overdue open tasks.",
+        "description": "List overdue tasks (summary: id, name, status, due_date, project context). Use tf_get_task for full detail.",
         "input_schema": _schema({}),
     },
     {
@@ -1084,6 +1110,27 @@ TF_TOOL_DEFINITIONS = [
         "name": "tf_goal_remove",
         "description": "Delete a goal permanently.",
         "input_schema": _schema({"goal_id": {"type": "integer"}}, ["goal_id"]),
+    },
+    {
+        "name": "tf_list_deleted",
+        "description": "List recently deleted items available for undo. Returns id, type, name, and deletion time.",
+        "input_schema": _schema(
+            {
+                "entity_type": {
+                    "type": "string",
+                    "description": "Filter: 'task', 'section', or 'goal'. Empty for all.",
+                    "default": "",
+                }
+            }
+        ),
+    },
+    {
+        "name": "tf_undo_delete",
+        "description": "Restore a previously deleted task, section, or goal. Use tf_list_deleted to find the ID.",
+        "input_schema": _schema(
+            {"deleted_item_id": {"type": "integer", "description": "ID from the deleted_items list"}},
+            ["deleted_item_id"],
+        ),
     },
     {
         "name": "load_tools",
@@ -1237,6 +1284,7 @@ MUTATING_TOOL_NAMES = {
     "tf_goal_complete",
     "tf_goal_reopen",
     "tf_goal_remove",
+    "tf_undo_delete",
 }
 _SUB_AGENT_EXCLUDED_TOOLS: set[str] = {
     "run_agent",
@@ -1274,7 +1322,7 @@ async def tf_list_projects_handler(tool_input, *, call_index=0):
     try:
         phase = tool_input.get("phase")
         projects = db.list_projects(conn, phase=phase)
-        return {"projects": projects, "count": len(projects)}, None
+        return {"projects": [_slim_project(project) for project in projects], "count": len(projects)}, None
     finally:
         conn.close()
 
@@ -1289,7 +1337,7 @@ async def tf_get_project_handler(tool_input, *, call_index=0):
             return _tool_error("not_found", f"Project {project_id} not found")
         sections = db.list_sections(conn, project_id)
         tasks = db.list_tasks(conn, project_id=project_id)
-        return {"project": project, "sections": sections, "tasks": tasks}, None
+        return {"project": project, "sections": sections, "tasks": [_slim_task(task) for task in tasks]}, None
     finally:
         conn.close()
 
@@ -1420,7 +1468,7 @@ async def tf_list_tasks_handler(tool_input, *, call_index=0):
             status=tool_input.get("status"),
             assignee=tool_input.get("assignee"),
         )
-        return {"tasks": tasks, "count": len(tasks)}, None
+        return {"tasks": [_slim_task(task) for task in tasks], "count": len(tasks)}, None
     finally:
         conn.close()
 
@@ -1558,7 +1606,7 @@ async def tf_search_handler(tool_input, *, call_index=0):
             results = db.search_tasks(conn, query, limit)
         except sqlite3.OperationalError as exc:
             return _tool_error("invalid_input", str(exc))
-        return {"results": results, "count": len(results)}, None
+        return {"results": [_slim_search_result(result) for result in results], "count": len(results)}, None
     finally:
         conn.close()
 
@@ -1568,7 +1616,7 @@ async def tf_backlog_handler(tool_input, *, call_index=0):
     conn = _conn()
     try:
         tasks = db.backlog(conn)
-        return {"tasks": tasks, "count": len(tasks)}, None
+        return {"tasks": [_slim_task(task) for task in tasks], "count": len(tasks)}, None
     finally:
         conn.close()
 
@@ -1577,7 +1625,9 @@ async def tf_active_handler(tool_input, *, call_index=0):
     del tool_input, call_index
     conn = _conn()
     try:
-        return db.active_view(conn), None
+        data = db.active_view(conn)
+        data["projects"] = [_slim_project(project) for project in data["projects"]]
+        return data, None
     finally:
         conn.close()
 
@@ -1591,7 +1641,7 @@ async def tf_due_soon_handler(tool_input, *, call_index=0):
         except (TypeError, ValueError):
             days = 7
         tasks = db.due_soon(conn, days)
-        return {"tasks": tasks, "count": len(tasks)}, None
+        return {"tasks": [_slim_task(task) for task in tasks], "count": len(tasks)}, None
     finally:
         conn.close()
 
@@ -1601,7 +1651,7 @@ async def tf_overdue_handler(tool_input, *, call_index=0):
     conn = _conn()
     try:
         tasks = db.overdue(conn)
-        return {"tasks": tasks, "count": len(tasks)}, None
+        return {"tasks": [_slim_task(task) for task in tasks], "count": len(tasks)}, None
     finally:
         conn.close()
 
@@ -1765,6 +1815,32 @@ async def tf_goal_remove_handler(tool_input, *, call_index=0):
         if ok:
             invalidate_workspace_summary_cache()
         return _ok_or_not_found(ok), None
+    finally:
+        conn.close()
+
+
+async def tf_list_deleted_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        entity_type = tool_input.get("entity_type", "") or None
+        items = db.list_deleted_items(conn, entity_type)
+        return {"deleted_items": items, "count": len(items)}, None
+    finally:
+        conn.close()
+
+
+async def tf_undo_delete_handler(tool_input, *, call_index=0):
+    del call_index
+    conn = _conn()
+    try:
+        result = db.restore_deleted_item(conn, tool_input.get("deleted_item_id"))
+        if result:
+            invalidate_workspace_summary_cache()
+            return {"status": "ok", "restored": result[0], "entity_id": result[1]}, None
+        return _ok_or_not_found(False), None
+    except ValueError as exc:
+        return _tool_error("restore_failed", str(exc))
     finally:
         conn.close()
 
@@ -2214,6 +2290,8 @@ LOCAL_TOOL_HANDLERS = {
     "tf_goal_complete": tf_goal_complete_handler,
     "tf_goal_reopen": tf_goal_reopen_handler,
     "tf_goal_remove": tf_goal_remove_handler,
+    "tf_list_deleted": tf_list_deleted_handler,
+    "tf_undo_delete": tf_undo_delete_handler,
     "load_tools": load_tools_handler,
     "notes_search": notes_search_handler,
     "notes_read": notes_read_handler,
@@ -2249,6 +2327,17 @@ def _build_mutation_event(tool_name: str, tool_input: dict[str, Any], result: An
     elif tool_name in {"tf_create_goal", "tf_update_goal", "tf_goal_complete", "tf_goal_reopen", "tf_goal_remove"}:
         entity_type = "goal"
         entity_id = result.get("goal_id") or tool_input.get("goal_id")
+    elif tool_name == "tf_undo_delete":
+        restored = result.get("restored", "")
+        if restored == "task":
+            entity_type = "task"
+        elif restored == "section":
+            entity_type = "section"
+        elif restored == "goal":
+            entity_type = "goal"
+        else:
+            entity_type = "project"
+        entity_id = result.get("entity_id")
     else:
         entity_type = "task"
         entity_id = result.get("task_id") or tool_input.get("task_id")
@@ -2263,19 +2352,36 @@ def _build_mutation_event(tool_name: str, tool_input: dict[str, Any], result: An
     }
 
 
+def _rest_mutation(entity_type: str, entity_id: int | None, tool_name: str = ""):
+    if entity_id is None:
+        return
+    _broadcast_sync(
+        {
+            "type": "taskflow_mutation",
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "tool_name": tool_name,
+            "_source": "rest",
+        }
+    )
+
+
 def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, default=str)}\n\n"
 
 
-def _chat_stream_response(generator) -> StreamingResponse:
+def _chat_stream_response(generator, session_id: str = "") -> StreamingResponse:
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    if session_id:
+        headers["X-Session-ID"] = session_id
     return StreamingResponse(
         generator,
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=headers,
     )
 
 
@@ -2292,21 +2398,63 @@ async def sse_generator(
     turn_tools: list[dict[str, Any]] = []
     assistant_chunks: list[str] = []
     pending_mutations: list[dict[str, Any]] = []
+    _SENTINEL = object()
     event_iter = event_log.iter_from()
+    next_entry_task: asyncio.Task | None = None
+    idle_heartbeats = 0
+    last_seq = 0
 
+    exit_reason = "unknown"
     try:
         while True:
-            if await request.is_disconnected():
-                runner_task.cancel()
-                break
+            if next_entry_task is None:
+                next_entry_task = asyncio.create_task(anext(event_iter, _SENTINEL))
 
-            try:
-                entry = await asyncio.wait_for(anext(event_iter), timeout=SSE_HEARTBEAT_SECONDS)
-            except asyncio.TimeoutError:
+            done, _ = await asyncio.wait({next_entry_task}, timeout=SSE_HEARTBEAT_SECONDS)
+
+            if not done:
+                # Timeout — task still pending (NOT cancelled, unlike wait_for)
+                idle_heartbeats += 1
+                if idle_heartbeats >= 3 and await request.is_disconnected():
+                    log.info("sse_idle_disconnect | %s | idle_heartbeats=%d", event_log._session_id, idle_heartbeats)
+                    exit_reason = "idle_disconnect"
+                    break
                 yield _sse({"type": "heartbeat"})
                 continue
-            except StopAsyncIteration:
+
+            # Task completed — retrieve result
+            next_entry_task = None
+            idle_heartbeats = 0
+            try:
+                result = done.pop().result()
+            except asyncio.CancelledError:
+                exit_reason = "cancelled"
                 break
+            except Exception as exc:
+                log.warning("sse_loop_exception | %s | %s: %s", event_log._session_id, type(exc).__name__, exc)
+                exit_reason = f"exception:{type(exc).__name__}"
+                break
+
+            if result is _SENTINEL:
+                if runner_task.done():
+                    exit_reason = "stop_iteration"
+                    break
+                has_unseen = len(event_log._entries) > last_seq
+                if has_unseen or not event_log._closed:
+                    log.warning(
+                        "sse_iter_reset | %s | last_seq=%d log_entries=%d closed=%s",
+                        event_log._session_id,
+                        last_seq,
+                        len(event_log._entries),
+                        event_log._closed,
+                    )
+                    event_iter = event_log.iter_from(last_seq)
+                    continue
+                exit_reason = "stop_iteration"
+                break
+
+            entry = result
+            last_seq = entry.seq
 
             event = dict(entry.event)
             event_type = event.get("type")
@@ -2400,6 +2548,7 @@ async def sse_generator(
                 full_content = assistant_text + _build_tool_summary(turn_tools)
                 if not full_content.strip():
                     full_content = "(empty response)"
+                sid = event_log._session_id
                 try:
                     db.save_chat_message(conn, "assistant", full_content, request_id)
                 except Exception:
@@ -2424,6 +2573,14 @@ async def sse_generator(
                             if len(compact_messages) > KEEP_RECENT_MESSAGES
                             else compact_messages
                         )
+                        older_tokens = estimate_tokens(older)
+                        log.info(
+                            "compaction_start | %s | messages=%d older=%d older_tokens=%d",
+                            sid,
+                            len(compact_messages),
+                            len(older),
+                            older_tokens,
+                        )
                         summary = await _generate_summary(older)
                         if summary and summary.strip():
                             db.save_chat_compaction(
@@ -2432,11 +2589,25 @@ async def sse_generator(
                                 keep_recent=KEEP_RECENT_MESSAGES,
                                 cutoff_max_id=max_id,
                             )
+                            log.info(
+                                "compaction_done | %s | summary_chars=%d kept=%d",
+                                sid,
+                                len(summary),
+                                KEEP_RECENT_MESSAGES,
+                            )
+                            await _broadcast({"type": "chat_update", "_source": sid})
+                        else:
+                            log.warning(
+                                "compaction_empty | %s | summary generation returned empty",
+                                sid,
+                            )
                 except Exception:
                     log.exception("Compaction failed")
 
                 for mutation in pending_mutations:
                     yield _sse(mutation)
+                    await _broadcast({**mutation, "_source": sid})
+                await _broadcast({"type": "chat_update", "_source": sid})
                 yield _sse({"type": "done", "assistant_text": assistant_text})
                 break
 
@@ -2444,18 +2615,71 @@ async def sse_generator(
                 yield _sse({"type": "error", "error": str(event.get("error", "Unknown error"))})
                 break
     finally:
+        # Clean up pending anext task if we're exiting early
+        if next_entry_task is not None and not next_entry_task.done():
+            next_entry_task.cancel()
         disconnected = await request.is_disconnected()
-        if disconnected:
-            log.info("chat_disconnect | %s", event_log._session_id)
-        if not runner_task.done():
+        runner_done = runner_task.done()
+        log.info(
+            "sse_exit | %s | reason=%s disconnected=%s runner_done=%s",
+            event_log._session_id, exit_reason, disconnected, runner_done,
+        )
+        if runner_done:
+            conn.close()
+        elif disconnected or exit_reason in ("cancelled", "unknown", "stop_iteration", "idle_disconnect") or exit_reason.startswith("exception:"):
+            # Client disconnected but runner is still working (e.g. sub-agent).
+            # Let the runner finish in the background instead of killing it.
+            sid = event_log._session_id
+
+            async def _background_finish(
+                task: asyncio.Task[None],
+                elog: EventLog,
+                connection: sqlite3.Connection,
+                req_id: str,
+                session_id: str,
+            ) -> None:
+                try:
+                    await asyncio.wait_for(task, timeout=_SUB_AGENT_TIMEOUT + 60)
+                except asyncio.TimeoutError:
+                    log.warning("runner_timeout_after_disconnect | %s", session_id)
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    log.exception("runner_error_after_disconnect | %s", session_id)
+                else:
+                    # Runner completed — save the assistant message
+                    text_parts = []
+                    for entry in elog.entries:
+                        ev = entry.event
+                        if ev.get("type") == "text_delta":
+                            text_parts.append(str(ev.get("text", "")))
+                    final_text = "".join(text_parts).strip()
+                    if final_text:
+                        try:
+                            db.save_chat_message(connection, "assistant", final_text, req_id)
+                            log.info("background_save | %s | chars=%d", session_id, len(final_text))
+                        except Exception:
+                            log.warning("background_save_failed | %s", session_id)
+                finally:
+                    connection.close()
+
+            asyncio.create_task(_background_finish(runner_task, event_log, conn, request_id, sid))
+            log.info("runner_detached | %s | runner continues in background", sid)
+        else:
+            # Normal exit (not disconnected) — cancel and clean up
             runner_task.cancel()
-        try:
-            await runner_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            log.exception("chat_runner_error | %s", event_log._session_id)
-        conn.close()
+            try:
+                await runner_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("chat_runner_error | %s", event_log._session_id)
+            conn.close()
 
 
 # Initialize DB on import
@@ -2504,6 +2728,7 @@ def create_project(body: ProjectCreate):
         raise HTTPException(400, str(e))
     conn.close()
     invalidate_workspace_summary_cache()
+    _rest_mutation("project", pid, "create_project")
     return {"project_id": pid}
 
 
@@ -2524,6 +2749,7 @@ def update_project(project_id: int, body: ProjectUpdate):
     if not ok:
         raise HTTPException(404, "Project not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("project", project_id, "update_project")
     return {"status": "ok"}
 
 
@@ -2535,6 +2761,7 @@ def archive_project(project_id: int):
     if not ok:
         raise HTTPException(404, "Project not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("project", project_id, "archive_project")
     return {"status": "ok"}
 
 
@@ -2546,6 +2773,7 @@ def unarchive_project(project_id: int):
     if not ok:
         raise HTTPException(404, "Project not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("project", project_id, "unarchive_project")
     return {"status": "ok"}
 
 
@@ -2559,6 +2787,7 @@ def create_section(body: SectionCreate):
     sid = db.create_section(conn, body.project_id, body.name, plan=body.plan)
     conn.close()
     invalidate_workspace_summary_cache()
+    _rest_mutation("section", sid, "create_section")
     return {"section_id": sid}
 
 
@@ -2575,6 +2804,7 @@ def update_section(section_id: int, body: SectionUpdate):
     if not ok:
         raise HTTPException(404, "Section not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("section", section_id, "update_section")
     return {"status": "ok"}
 
 
@@ -2617,6 +2847,7 @@ def create_task(body: TaskCreate):
     )
     conn.close()
     invalidate_workspace_summary_cache()
+    _rest_mutation("task", tid, "create_task")
     return {"task_id": tid}
 
 
@@ -2635,6 +2866,7 @@ def update_task(task_id: int, body: TaskUpdate):
     if not ok:
         raise HTTPException(404, "Task not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("task", task_id, "update_task")
     return {"status": "ok"}
 
 
@@ -2652,6 +2884,11 @@ def reorder_tasks(body: dict[str, Any]):
     finally:
         conn.close()
     invalidate_workspace_summary_cache()
+    _rest_mutation(
+        "task",
+        body.get("task_ids", [None])[0] if isinstance(body, dict) else None,
+        "reorder_tasks",
+    )
     return {"status": "ok", "count": len(task_ids)}
 
 
@@ -2663,6 +2900,7 @@ def complete_task(task_id: int):
     if not ok:
         raise HTTPException(404, "Task not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("task", task_id, "complete_task")
     return {"status": "ok"}
 
 
@@ -2674,6 +2912,7 @@ def reopen_task(task_id: int):
     if not ok:
         raise HTTPException(404, "Task not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("task", task_id, "reopen_task")
     return {"status": "ok"}
 
 
@@ -2685,6 +2924,7 @@ def delete_task(task_id: int):
     if not ok:
         raise HTTPException(404, "Task not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("task", task_id, "delete_task")
     return {"status": "ok"}
 
 
@@ -2696,6 +2936,7 @@ def move_task(task_id: int, project_id: Optional[int] = None, section_id: Option
     if not ok:
         raise HTTPException(404, "Task not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("task", task_id, "move_task")
     return {"status": "ok"}
 
 
@@ -2782,6 +3023,7 @@ def api_add_focus(body: FocusCreate):
         raise HTTPException(400, str(e))
     conn.close()
     invalidate_workspace_summary_cache()
+    _rest_mutation("today", body.task_id, "add_focus")
     return {"status": "ok", "inserted": inserted}
 
 
@@ -2799,6 +3041,7 @@ def api_move_focus(task_id: int, body: FocusMove):
     if not ok:
         raise HTTPException(404, "Focus entry not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("today", task_id, "move_focus")
     return {"status": "ok"}
 
 
@@ -2816,6 +3059,7 @@ def api_remove_focus(task_id: int, date: str | None = None):
     if not ok:
         raise HTTPException(404, "Focus entry not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("today", task_id, "remove_focus")
     return {"status": "ok"}
 
 
@@ -2841,6 +3085,7 @@ def api_create_goal(body: GoalCreate):
         raise HTTPException(400, str(e))
     conn.close()
     invalidate_workspace_summary_cache()
+    _rest_mutation("goal", goal_id, "create_goal")
     return {"goal_id": goal_id}
 
 
@@ -2861,6 +3106,7 @@ def api_update_goal(goal_id: int, body: GoalUpdate):
     if not ok:
         raise HTTPException(404, "Goal not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("goal", goal_id, "update_goal")
     return {"status": "ok"}
 
 
@@ -2872,6 +3118,7 @@ def api_complete_goal(goal_id: int):
     if not ok:
         raise HTTPException(404, "Goal not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("goal", goal_id, "complete_goal")
     return {"status": "ok"}
 
 
@@ -2883,6 +3130,7 @@ def api_reopen_goal(goal_id: int):
     if not ok:
         raise HTTPException(404, "Goal not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("goal", goal_id, "reopen_goal")
     return {"status": "ok"}
 
 
@@ -2894,6 +3142,7 @@ def api_delete_goal(goal_id: int):
     if not ok:
         raise HTTPException(404, "Goal not found")
     invalidate_workspace_summary_cache()
+    _rest_mutation("goal", goal_id, "delete_goal")
     return {"status": "ok"}
 
 
@@ -2912,15 +3161,17 @@ def reset_chat_history():
     conn = _conn()
     try:
         db.mark_chat_history_reset(conn)
-        return {"status": "ok"}
     finally:
         conn.close()
+    _broadcast_sync({"type": "chat_update", "_source": "rest"})
+    return {"status": "ok"}
 
 
 @app.post("/api/chat/history/migrate")
 def migrate_chat_history(body: dict[str, Any]):
     messages = body.get("messages", []) if isinstance(body, dict) else []
     conn = _conn()
+    result: dict[str, Any] | None = None
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -2955,12 +3206,37 @@ def migrate_chat_history(body: dict[str, Any]):
                 count += 1
 
             conn.execute("COMMIT")
-            return {"status": "ok", "migrated": count}
+            result = {"status": "ok", "migrated": count}
         except Exception:
             conn.execute("ROLLBACK")
             raise
     finally:
         conn.close()
+    _broadcast_sync({"type": "chat_update", "_source": "rest"})
+    return result or {"status": "ok", "migrated": 0}
+
+
+@app.get("/api/events")
+async def global_events(request: Request):
+    q: asyncio.Queue = asyncio.Queue(maxsize=256)
+    _event_bus_clients.add(q)
+
+    async def gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                if q not in _event_bus_clients:
+                    break
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=SSE_HEARTBEAT_SECONDS)
+                    yield _sse(event)
+                except asyncio.TimeoutError:
+                    yield _sse({"type": "heartbeat"})
+        finally:
+            _event_bus_clients.discard(q)
+
+    return _chat_stream_response(gen())
 
 
 @app.post("/api/chat")
@@ -2990,7 +3266,18 @@ async def chat(body: ChatRequest, request: Request):
         messages.append({"role": "user", "content": body.message})
 
         session_id = f"tf-{uuid4().hex[:8]}"
-        log.info("chat_start | %s | view=%s messages=%d", session_id, body.context.view, len(messages))
+        ctx = body.context
+        ctx_parts = [f"view={ctx.view}"]
+        if ctx.project_id is not None:
+            ctx_parts.append(f"project={ctx.project_id}")
+        if ctx.search_query:
+            ctx_parts.append(f"query={ctx.search_query!r}")
+        log.info(
+            "chat_start | %s | %s messages=%d",
+            session_id,
+            " ".join(ctx_parts),
+            len(messages),
+        )
         event_log = EventLog(session_id=session_id)
         request_handlers = dict(LOCAL_TOOL_HANDLERS)
         loaded_mcp_servers: set[str] = set()
@@ -3034,7 +3321,8 @@ async def chat(body: ChatRequest, request: Request):
         raise
 
     return _chat_stream_response(
-        sse_generator(request, conn, event_log, runner_task, request_id)
+        sse_generator(request, conn, event_log, runner_task, request_id),
+        session_id=event_log._session_id,
     )
 
 
@@ -3047,7 +3335,10 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/")
 def index():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    return FileResponse(
+        str(STATIC_DIR / "index.html"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 def main():

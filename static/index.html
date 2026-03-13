@@ -1116,6 +1116,18 @@ button { cursor: pointer; }
 .chat-row.user { justify-content: flex-end; }
 .chat-row.assistant,
 .chat-row.tool { justify-content: flex-start; }
+.chat-row.queued { opacity: 0.6; position: relative; }
+.chat-row.queued::after {
+  content: 'queued';
+  position: absolute;
+  top: 2px;
+  right: 14px;
+  font-size: 9px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
 .chat-msg {
   max-width: 92%;
@@ -1517,12 +1529,19 @@ const S = {
     messages: [],
     historyReady: false,
     streaming: false,
+    activeSessionId: null,
+    pendingMessages: [],
+    drainTimer: null,
+    turnId: 0,
     currentAssistantText: '',
     currentAssistantEl: null,
     toolCards: new Map(),
     turnTools: [],
+    turnToolRows: [],
   },
 }
+
+let _eventSource = null, _esRetry = 1000, _missedBroadcasts = false, _sessionClearTimer = null
 
 /* ================================================================
    API
@@ -1568,12 +1587,40 @@ function md(src) {
 /* ================================================================
    INIT
    ================================================================ */
+function connectEventStream() {
+  if (_eventSource) return
+  _eventSource = new EventSource('/api/events')
+  _eventSource.onmessage = async (e) => {
+    try {
+      const event = JSON.parse(e.data)
+      if (event.type === 'heartbeat') return
+      if (event.type === 'taskflow_mutation') {
+        if (S.chat.streaming && event._source === S.chat.activeSessionId) return
+        if (S.chat.streaming) { _missedBroadcasts = true; return }
+        await handleChatMutation(event)
+      }
+      if (event.type === 'chat_update') {
+        if (event._source === S.chat.activeSessionId) return
+        if (S.chat.streaming) { _missedBroadcasts = true; return }
+        await loadChatHistory()
+      }
+    } catch (_) {}
+  }
+  _eventSource.onopen = () => { _esRetry = 1000 }
+  _eventSource.onerror = () => {
+    _eventSource.close(); _eventSource = null
+    setTimeout(connectEventStream, _esRetry)
+    _esRetry = Math.min(_esRetry * 2, 30000)
+  }
+}
+
 async function init() {
   await loadChatHistory()
   updateChatContext()
   setupKeys()
   setupSearch()
   setupChatInput()
+  connectEventStream()
   await loadProjects()
   await loadBadges()
   await goActive()
@@ -2620,6 +2667,7 @@ function loadChatMessages() {
 
 async function loadChatHistory() {
   S.chat.historyReady = false
+  updateChatInputState()
   try {
     const res = await fetch('/api/chat/history')
     if (!res.ok) throw new Error(res.status)
@@ -2650,7 +2698,7 @@ async function loadChatHistory() {
   saveChatMessages()
   S.chat.historyReady = true
   renderChat()
-  setChatStatus('Ready')
+  updateChatInputState()
 }
 
 function saveChatMessages() {
@@ -2666,16 +2714,67 @@ function saveChatMessages() {
 function renderChat() {
   const el = document.getElementById('chat-messages')
   el.innerHTML = ''
-  if (!S.chat.messages.length) {
+  if (!S.chat.messages.length && !S.chat.pendingMessages.length) {
     el.innerHTML = '<div class="chat-empty">Workspace-aware chat lives here. Ask about the current project, request planning help, or let Claude update tasks directly.</div>'
     return
   }
   for (const message of S.chat.messages) appendChatMessage(message.role, message.content, { persist: false })
+  if (S.chat.pendingMessages.length) {
+    _getOrCreateQueueBoundary()
+    for (const item of S.chat.pendingMessages) renderQueuedMessage(item.text)
+  }
 }
 
 function clearChatEmptyState() {
   const empty = document.querySelector('.chat-empty')
   if (empty) empty.remove()
+}
+
+function _getOrCreateQueueBoundary() {
+  let boundary = document.getElementById('chat-queue-boundary')
+  if (boundary) return boundary
+  boundary = document.createElement('div')
+  boundary.id = 'chat-queue-boundary'
+  boundary.style.cssText = 'height:0;overflow:hidden;border:0;margin:0;padding:0'
+  document.getElementById('chat-messages').appendChild(boundary)
+  return boundary
+}
+
+function _removeQueueBoundary() {
+  if (document.querySelector('.chat-row.queued')) return
+  const boundary = document.getElementById('chat-queue-boundary')
+  if (boundary) boundary.remove()
+}
+
+function _chatInsertRow(row) {
+  const chatMessages = document.getElementById('chat-messages')
+  const boundary = document.getElementById('chat-queue-boundary')
+  if (boundary) {
+    chatMessages.insertBefore(row, boundary)
+  } else {
+    chatMessages.appendChild(row)
+  }
+}
+
+function renderQueuedMessage(text) {
+  clearChatEmptyState()
+  const row = document.createElement('div')
+  row.className = 'chat-row user queued'
+  row.dataset.queued = 'true'
+
+  const bubble = document.createElement('div')
+  bubble.className = 'chat-msg user'
+  bubble.innerHTML = `<div class="chat-plain">${esc(text).replace(/\n/g, '<br>')}</div>`
+
+  row.appendChild(bubble)
+  _getOrCreateQueueBoundary()
+  document.getElementById('chat-messages').appendChild(row)
+  row.scrollIntoView({ block: 'end', behavior: 'instant' })
+}
+
+function removeFirstQueuedMessage() {
+  const row = document.getElementById('chat-messages').querySelector('.chat-row.queued')
+  if (row) row.remove()
 }
 
 function appendChatMessage(role, content, { persist = false } = {}) {
@@ -2689,7 +2788,7 @@ function appendChatMessage(role, content, { persist = false } = {}) {
   else bubble.innerHTML = `<div class="chat-plain">${esc(content).replace(/\n/g, '<br>')}</div>`
 
   row.appendChild(bubble)
-  document.getElementById('chat-messages').appendChild(row)
+  _chatInsertRow(row)
   scrollChatToBottom()
 
   if (persist) {
@@ -2737,8 +2836,9 @@ function appendToolCard(toolCallId, toolName, toolInput) {
       <pre>${esc(formatToolPayload(toolInput))}</pre>
     </div>`
   row.appendChild(details)
-  document.getElementById('chat-messages').appendChild(row)
+  _chatInsertRow(row)
   S.chat.toolCards.set(toolCallId, details)
+  S.chat.turnToolRows.push(row)
   scrollChatToBottom()
 }
 
@@ -2883,19 +2983,33 @@ function _buildToolSummary() {
 
 function scrollChatToBottom() {
   const el = document.getElementById('chat-messages')
-  requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
+  const boundary = document.getElementById('chat-queue-boundary')
+  requestAnimationFrame(() => {
+    if (boundary) {
+      boundary.scrollIntoView({ block: 'end', behavior: 'instant' })
+    } else {
+      el.scrollTop = el.scrollHeight
+    }
+  })
 }
 
 function setChatStatus(text) {
   document.getElementById('chat-status').textContent = text
 }
 
-function setChatStreaming(active) {
-  S.chat.streaming = active
-  document.getElementById('chat-send').disabled = active
-  document.getElementById('chat-send').textContent = active ? 'Thinking...' : 'Send'
-  document.getElementById('chat-input').disabled = active
-  setChatStatus(active ? 'Streaming…' : 'Ready')
+function updateChatInputState() {
+  const queueCount = S.chat.pendingMessages.length
+  const disabled = !S.chat.historyReady
+  document.getElementById('chat-send').disabled = disabled
+  document.getElementById('chat-send').textContent = S.chat.streaming
+    ? (queueCount ? `Queue +${queueCount}` : 'Thinking…')
+    : 'Send'
+  document.getElementById('chat-input').disabled = disabled
+  setChatStatus(
+    S.chat.streaming
+      ? (queueCount ? `Streaming… (${queueCount} queued)` : 'Streaming…')
+      : 'Ready'
+  )
 }
 
 function resetChatTurnState() {
@@ -2903,16 +3017,25 @@ function resetChatTurnState() {
   S.chat.currentAssistantEl = null
   S.chat.toolCards = new Map()
   S.chat.turnTools = []
+  S.chat.turnToolRows = []
 }
 
-function rollbackOptimisticChat(statusText) {
+function _rollbackAndClearQueue(statusText) {
+  if (S.chat.drainTimer) {
+    clearTimeout(S.chat.drainTimer)
+    S.chat.drainTimer = null
+  }
   if (S.chat.messages.length && S.chat.messages[S.chat.messages.length - 1].role === 'user') {
     S.chat.messages.pop()
   }
+  S.chat.pendingMessages = []
+  document.querySelectorAll('.chat-row.queued').forEach(row => row.remove())
+  _removeQueueBoundary()
   saveChatMessages()
   renderChat()
   resetChatTurnState()
-  setChatStreaming(false)
+  S.chat.streaming = false
+  updateChatInputState()
   setChatStatus(statusText)
 }
 
@@ -2944,7 +3067,7 @@ function toggleChat(force) {
   } else {
     app.style.gridTemplateColumns = '';
   }
-  if (next && !S.chat.streaming) setTimeout(() => document.getElementById('chat-input').focus(), 80)
+  if (next) setTimeout(() => document.getElementById('chat-input').focus(), 80)
 }
 
 /* ---- Sidebar resize ---- */
@@ -3036,11 +3159,18 @@ async function newConversation() {
   try {
     const res = await fetch('/api/chat/history/reset', { method: 'POST' })
     if (!res.ok) throw new Error(res.status)
+    if (S.chat.drainTimer) {
+      clearTimeout(S.chat.drainTimer)
+      S.chat.drainTimer = null
+    }
+    S.chat.pendingMessages = []
+    document.querySelectorAll('.chat-row.queued').forEach(row => row.remove())
+    _removeQueueBoundary()
     S.chat.messages = []
     resetChatTurnState()
     saveChatMessages()
     renderChat()
-    setChatStatus('Ready')
+    updateChatInputState()
   } catch (_) {
     setChatStatus('Could not reset; try again')
   }
@@ -3056,33 +3186,55 @@ function setupChatInput() {
   })
 }
 
-function buildChatPayload() {
+function _buildContext() {
   const context = { view: S.view }
   if (S.view === 'project' && S.projectId) context.project_id = S.projectId
   if (S.view === 'search' && S.lastSearchQuery) context.search_query = S.lastSearchQuery
+  return context
+}
+
+function buildChatPayload(messageText, context) {
   return {
-    message: S.chat.messages[S.chat.messages.length - 1]?.content || '',
-    context,
+    message: typeof messageText === 'string' ? messageText : (S.chat.messages[S.chat.messages.length - 1]?.content || ''),
+    context: context || _buildContext(),
   }
 }
 
 async function sendChat() {
-  if (!S.chat.historyReady || S.chat.streaming) return
+  if (!S.chat.historyReady) return
   const input = document.getElementById('chat-input')
   const text = input.value.trim()
   if (!text) return
 
+  const context = _buildContext()
   toggleChat(true)
-  appendChatMessage('user', text, { persist: true })
   input.value = ''
+  if (S.chat.streaming) {
+    S.chat.pendingMessages.push({ text, context })
+    renderQueuedMessage(text)
+    updateChatInputState()
+    return
+  }
+
+  await _sendNextMessage(text, context)
+}
+
+async function _sendNextMessage(text, context) {
+  const myTurn = ++S.chat.turnId
+  appendChatMessage('user', text, { persist: true })
   resetChatTurnState()
-  setChatStreaming(true)
+  if (_sessionClearTimer) {
+    clearTimeout(_sessionClearTimer)
+    _sessionClearTimer = null
+  }
+  S.chat.streaming = true
+  updateChatInputState()
 
   try {
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildChatPayload()),
+      body: JSON.stringify(buildChatPayload(text, context)),
     })
 
     if (!response.ok) {
@@ -3095,6 +3247,9 @@ async function sendChat() {
     }
 
     if (!response.body) throw new Error('Chat stream unavailable')
+
+    const sessionId = response.headers.get('X-Session-ID')
+    if (sessionId) S.chat.activeSessionId = sessionId
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
@@ -3116,12 +3271,17 @@ async function sendChat() {
         if (!payload) continue
         const event = JSON.parse(payload)
         finished = await handleChatEvent(event) || finished
+        if (finished) break
       }
+
+      if (finished) break
     }
 
+    if (myTurn !== S.chat.turnId) return
     if (!finished) finishChatStream(S.chat.currentAssistantText)
   } catch (err) {
-    rollbackOptimisticChat(err.message || 'Error')
+    if (myTurn !== S.chat.turnId) return
+    _rollbackAndClearQueue(err.message || 'Error')
   }
 }
 
@@ -3177,7 +3337,7 @@ async function handleChatEvent(event) {
 
   if (event.type === 'error') {
     const errorMsg = event.error || 'Unknown error'
-    rollbackOptimisticChat(
+    _rollbackAndClearQueue(
       errorMsg === 'save_failed' ? 'Could not save message; try again' : errorMsg
     )
     return true
@@ -3206,7 +3366,7 @@ function finishChatStream(assistantText) {
 
   // Collapse individual tool cards into a single summary row above the assistant message
   const chatMsgs = document.getElementById('chat-messages')
-  const toolRows = Array.from(chatMsgs.querySelectorAll('.chat-row.tool'))
+  const toolRows = S.chat.turnToolRows.filter(row => row && row.isConnected)
   if (toolRows.length > 0) {
     const uniqueTools = [...new Set(S.chat.turnTools.map(t => t.name.replace(/^tf_/, '')))]
     const label = uniqueTools.length <= 3 ? uniqueTools.join(', ') : `${toolRows.length} tools`
@@ -3229,14 +3389,40 @@ function finishChatStream(assistantText) {
     if (assistantRow) {
       chatMsgs.insertBefore(groupRow, assistantRow)
     } else {
-      chatMsgs.appendChild(groupRow)
+      _chatInsertRow(groupRow)
     }
   }
 
   S.chat.messages.push({ role: 'assistant', content: fullContent })
   saveChatMessages()
   resetChatTurnState()
-  setChatStreaming(false)
+  _drainQueue()
+}
+
+function _drainQueue() {
+  if (S.chat.pendingMessages.length > 0) {
+    const item = S.chat.pendingMessages.shift()
+    removeFirstQueuedMessage()
+    updateChatInputState()
+    S.chat.drainTimer = setTimeout(() => {
+      S.chat.drainTimer = null
+      _sendNextMessage(item.text, item.context)
+    }, 150)
+  } else {
+    _removeQueueBoundary()
+    S.chat.streaming = false
+    updateChatInputState()
+    if (_sessionClearTimer) clearTimeout(_sessionClearTimer)
+    _sessionClearTimer = setTimeout(() => { S.chat.activeSessionId = null; _sessionClearTimer = null }, 2000)
+    if (_missedBroadcasts) {
+      _missedBroadcasts = false
+      loadChatHistory()
+      loadProjects()
+      loadBadges()
+      refreshCurrentView({ reloadSidebar: false })
+    }
+    document.getElementById('chat-input').focus()
+  }
 }
 
 async function handleChatMutation(event) {

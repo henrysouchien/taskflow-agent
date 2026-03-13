@@ -43,6 +43,31 @@ def _json(data) -> str:
     return json.dumps(data, indent=2, default=str)
 
 
+_TASK_LIST_FIELDS = {"id", "name", "status", "due_date", "project_id", "section_name", "project_name"}
+
+
+def _slim_task(task: dict) -> dict:
+    return {k: v for k, v in task.items() if k in _TASK_LIST_FIELDS}
+
+
+def _slim_search_result(task: dict) -> dict:
+    result = _slim_task(task)
+    notes = task.get("notes") or ""
+    if notes:
+        result["notes"] = notes[:200] + ("..." if len(notes) > 200 else "")
+    return result
+
+
+_PROJECT_LIST_FIELDS = {"id", "name", "icon", "phase", "open_count", "task_count", "last_activity"}
+
+
+def _slim_project(project: dict) -> dict:
+    base = {k: v for k, v in project.items() if k in _PROJECT_LIST_FIELDS}
+    if "tasks" in project:
+        base["tasks"] = [_slim_task(task) for task in project["tasks"]]
+    return base
+
+
 def _error(msg: str) -> str:
     return json.dumps({"status": "error", "error": msg})
 
@@ -192,16 +217,16 @@ def _get_serve_status() -> dict:
 
 @mcp.tool()
 def tf_list_projects(phase: Optional[str] = None) -> str:
-    """List active projects with task counts (backlog excluded unless phase is passed)."""
+    """List projects (summary: id, name, phase, counts). Use tf_get_project for full plan."""
     conn = _conn()
     projects = db.list_projects(conn, phase=phase)
     conn.close()
-    return _json({"projects": projects, "count": len(projects)})
+    return _json({"projects": [_slim_project(project) for project in projects], "count": len(projects)})
 
 
 @mcp.tool()
 def tf_get_project(project_id: int) -> str:
-    """Get project details with sections and top-level tasks."""
+    """Get full project details with sections and slim top-level tasks. Use tf_get_task for task detail."""
     conn = _conn()
     project = db.get_project(conn, project_id)
     if not project:
@@ -210,7 +235,7 @@ def tf_get_project(project_id: int) -> str:
     sections = db.list_sections(conn, project_id)
     tasks = db.list_tasks(conn, project_id=project_id)
     conn.close()
-    return _json({"project": project, "sections": sections, "tasks": tasks})
+    return _json({"project": project, "sections": sections, "tasks": [_slim_task(task) for task in tasks]})
 
 
 @mcp.tool()
@@ -335,11 +360,11 @@ def tf_list_tasks(
     status: Optional[str] = None,
     assignee: Optional[str] = None,
 ) -> str:
-    """List tasks with optional filters. Only returns top-level tasks (not subtasks)."""
+    """List top-level tasks (summary: id, name, status, due_date, project context). Use tf_get_task for notes and subtasks."""
     conn = _conn()
     tasks = db.list_tasks(conn, project_id=project_id, section_id=section_id, status=status, assignee=assignee)
     conn.close()
-    return _json({"tasks": tasks, "count": len(tasks)})
+    return _json({"tasks": [_slim_task(task) for task in tasks], "count": len(tasks)})
 
 
 @mcp.tool()
@@ -452,47 +477,48 @@ def tf_delete_task(task_id: int) -> str:
 
 @mcp.tool()
 def tf_search(query: str, limit: int = 50) -> str:
-    """Full-text search across task names and notes."""
+    """Search tasks by name/notes (summary + notes excerpt). Use tf_get_task for full detail."""
     conn = _conn()
     results = db.search_tasks(conn, query, limit)
     conn.close()
-    return _json({"results": results, "count": len(results)})
+    return _json({"results": [_slim_search_result(result) for result in results], "count": len(results)})
 
 
 @mcp.tool()
 def tf_backlog() -> str:
-    """List open top-level tasks in the backlog project."""
+    """List backlog tasks (summary: id, name, status, due_date, project context). Use tf_get_task for full detail."""
     conn = _conn()
     tasks = db.backlog(conn)
     conn.close()
-    return _json({"tasks": tasks, "count": len(tasks)})
+    return _json({"tasks": [_slim_task(task) for task in tasks], "count": len(tasks)})
 
 
 @mcp.tool()
 def tf_active() -> str:
-    """List active projects with their next open tasks and backlog count."""
+    """List active projects (summary fields) with slim next tasks and backlog count. Use tf_get_project/tf_get_task for full detail."""
     conn = _conn()
     data = db.active_view(conn)
     conn.close()
+    data["projects"] = [_slim_project(project) for project in data["projects"]]
     return _json(data)
 
 
 @mcp.tool()
 def tf_due_soon(days: int = 7) -> str:
-    """List open tasks due within N days from today."""
+    """List tasks due within N days (summary: id, name, status, due_date, project context). Use tf_get_task for full detail."""
     conn = _conn()
     tasks = db.due_soon(conn, days)
     conn.close()
-    return _json({"tasks": tasks, "count": len(tasks)})
+    return _json({"tasks": [_slim_task(task) for task in tasks], "count": len(tasks)})
 
 
 @mcp.tool()
 def tf_overdue() -> str:
-    """List all overdue open tasks."""
+    """List overdue tasks (summary: id, name, status, due_date, project context). Use tf_get_task for full detail."""
     conn = _conn()
     tasks = db.overdue(conn)
     conn.close()
-    return _json({"tasks": tasks, "count": len(tasks)})
+    return _json({"tasks": [_slim_task(task) for task in tasks], "count": len(tasks)})
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +650,31 @@ def tf_goal_remove(goal_id: int) -> str:
     ok = db.delete_goal(conn, goal_id)
     conn.close()
     return _json({"status": "ok" if ok else "not_found"})
+
+
+@mcp.tool()
+def tf_list_deleted(entity_type: str = "") -> str:
+    """List recently deleted items available for undo. Optional filter: 'task', 'section', or 'goal'."""
+    conn = _conn()
+    items = db.list_deleted_items(conn, entity_type or None)
+    conn.close()
+    return _json({"deleted_items": items, "count": len(items)})
+
+
+@mcp.tool()
+def tf_undo_delete(deleted_item_id: int) -> str:
+    """Restore a previously deleted item by its deleted_items ID."""
+    conn = _conn()
+    try:
+        result = db.restore_deleted_item(conn, deleted_item_id)
+    except ValueError as exc:
+        conn.close()
+        return _json({"status": "error", "error": str(exc)})
+    conn.close()
+    if result:
+        entity_type, entity_id = result
+        return _json({"status": "ok", "restored": entity_type, "entity_id": entity_id})
+    return _json({"status": "not_found"})
 
 
 # ---------------------------------------------------------------------------
